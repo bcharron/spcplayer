@@ -76,6 +76,37 @@ void dump_registers(spc_registers_t *registers)
 	//printf("Reserved[0]: %u (%02X)", registers->reserved[0], registers->reserved[0]);
 }
 
+// Dump and instruction and return its size in bytes
+int dump_instruction(Uint16 pc, Uint8 *ram)
+{
+	Uint8 opcode = ram[pc];
+	int bytes = 1;
+
+	printf("%04X  ", pc);
+
+	switch(opcode) {
+		case 0x6B: // RORZ
+			bytes = 2;
+			printf("RORZ 0x%02X\n", ram[pc + 1]);
+			break;
+
+		case 0x6C: // ROR
+			bytes = 3;
+			printf("ROR 0x%02X%02X\n", ram[pc + 1], ram[pc + 2]);
+			break;
+
+		case 0x6E: // DBNZ
+			bytes = 3;
+			printf("DBNZ 0x%02X,0x%02X\n", ram[pc + 1], ram[pc + 2]);
+			break;
+
+		default:
+			printf("Unknown: %02X\n", opcode);
+	}
+
+	return(bytes);
+}
+
 spc_file_t *read_spc_file(char *filename)
 {
 	FILE *f;
@@ -162,6 +193,9 @@ void usage(char *argv0)
 int main (int argc, char *argv[])
 {
 	spc_file_t *spc_file;
+	spc_registers_t *reg;
+	Uint8 *ram;
+	Uint8 byte;
 
 	if (argc != 2) {
 		usage(argv[0]);
@@ -169,7 +203,26 @@ int main (int argc, char *argv[])
 	}
 
 	spc_file = read_spc_file(argv[1]);
+	if (spc_file == NULL) {
+		fprintf(stderr, "Error loading file %s\n", argv[1]);
+		exit(1);
+	}
+
+	reg = &spc_file->registers;
+	ram = spc_file->ram;
+
 	dump_registers(&spc_file->registers);
+
+	byte = ram[reg->pc];
+
+	int x;
+	for (x = 0; x < 10; x++) {
+		printf("[%d] %02X\n", x, ram[x + reg->pc]);
+	}
+
+	for (x = 0; x < 10; x++) {
+		reg->pc += dump_instruction(reg->pc, ram);
+	}
 
 	return (0);
 }
