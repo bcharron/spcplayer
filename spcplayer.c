@@ -84,6 +84,7 @@ typedef struct spc_state_s {
 	spc_registers_t *regs;
 	Uint8 *ram;
 	Uint8 *dsp_registers;
+	long cycle;
 } spc_state_t;
 
 char *flags_str(spc_flags_t flags)
@@ -104,18 +105,49 @@ char *flags_str(spc_flags_t flags)
 	*ptr++ = ']';
 	*ptr++ = '\0';
 
-	/*
-	printf("%s", flags.n ? "n" : " ");
-	printf("%s", flags.v ? "v" : " ");
-	printf("%s", flags.p ? "p" : " ");
-	printf("%s", flags.b ? "b" : " ");
-	printf("%s", flags.h ? "h" : " ");
-	printf("%s", flags.i ? "i" : " ");
-	printf("%s", flags.z ? "z" : " ");
-	printf("%s", flags.c ? "c" : " ");
-	*/
-
 	return(buf);
+}
+
+void do_beq(spc_state_t *state, Uint8 operand1)
+{
+	printf("BEQ 0x%02X\n", operand1);
+
+	if (state->regs->psw.f.z) {
+		state->cycle += 2;
+		state->regs->pc += (Sint8) operand1;
+		printf("Jumping to 0x%04X\n", state->regs->pc);
+	} else {
+		state->regs->pc += 2;
+	}
+}
+
+void instr_or(spc_state_t *state, Uint8 *operand1, Uint8 operand2)
+{
+	printf("OR %02X, %02X\n", *operand1, operand2);
+	*operand1 = *operand1 | operand2;
+
+	state->regs->psw.f.n = (*operand1 & 0x80) > 0;
+	state->regs->psw.f.z = (*operand1 == 0);
+}
+
+void do_or(spc_state_t *state, Uint8 opcode)
+{
+	Uint16 operand16;
+
+	switch(opcode) {
+		case 0x04:
+			instr_or(state, &state->regs->a, state->ram[state->regs->pc + 1]);
+			break;
+
+		case 0x05:
+			memcpy(&operand16, &state->ram[state->regs->pc + 1], 2);
+			instr_or(state, &state->regs->a, state->ram[operand16]);
+			break;
+
+		case 0x06:
+			instr_or(state, &state->regs->a, state->ram[state->regs->x]);
+			break;
+	}
 }
 
 void dump_registers(spc_registers_t *registers)
@@ -127,7 +159,6 @@ void dump_registers(spc_registers_t *registers)
 	printf("Y  : %u (0x%02X)\n", registers->y, registers->y);
 	printf("PSW: 0x%02X %s\n", registers->psw.val, flags_str(registers->psw));
 	printf("SP : %u (0x%02X)\n", registers->sp, registers->sp);
-	//printf("Reserved[0]: %u (%02X)", registers->reserved[0], registers->reserved[0]);
 }
 
 // Dump and instruction and return its size in bytes
@@ -273,9 +304,8 @@ void usage(char *argv0)
 int main (int argc, char *argv[])
 {
 	spc_file_t *spc_file;
-	spc_registers_t *reg;
-	Uint8 *ram;
 	Uint8 byte;
+	spc_state_t state;
 
 	if (argc != 2) {
 		usage(argv[0]);
@@ -290,28 +320,25 @@ int main (int argc, char *argv[])
 
 	printf("si: %lu\n", sizeof(spc_flags_t));
 
-	reg = &spc_file->registers;
-	ram = spc_file->ram;
+	state.regs = &spc_file->registers;
+	state.ram = spc_file->ram;
+	state.cycle = 0;
+	state.dsp_registers = spc_file->dsp_registers;
 
-	dump_registers(reg);
+	dump_registers(state.regs);
 
-	reg->psw.f.p = 1;
-
-	dump_registers(reg);
-
-	reg->psw.f.v = 1;
-	dump_registers(reg);
-
-	byte = ram[reg->pc];
+	byte = state.ram[state.regs->pc];
 
 	int x;
+	int inc = 0;
 	for (x = 0; x < 10; x++) {
-		// printf("[%d] %02X\n", x, ram[x + reg->pc]);
+		inc += dump_instruction(state.regs->pc + inc, state.ram);
 	}
 
-	for (x = 0; x < 10; x++) {
-		reg->pc += dump_instruction(reg->pc, ram);
-	}
+	do_beq(&state, state.ram[state.regs->pc + 1]);
+	dump_registers(state.regs);
+
+	dump_instruction(state.regs->pc, state.ram);
 
 	return (0);
 }
