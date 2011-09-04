@@ -27,6 +27,8 @@
 #include <arpa/inet.h>
 #include <SDL/SDL.h>
 
+#include "opcode_table.h"
+
 #define SPC_HEADER_LEN 33
 #define SPC_HEADER_CONTAINS_ID_TAG
 #define SPC_VERSION_OFFSET 0x24
@@ -34,12 +36,26 @@
 #define SPC_DSP_REGISTERS 128
 #define SPC_RAM_SIZE 65536
 
+typedef union spc_flags_u {
+	struct {
+		int c : 1; // Carry
+		int z : 1; // Zero
+		int i : 1; // Interrupt Enable
+		int h : 1; // Half-Carry
+		int b : 1; // Break
+		int p : 1; // Direct Page
+		int v : 1; // Overflow
+		int n : 1; // Negative
+	} f;
+	Uint8 val;
+} spc_flags_t;
+
 typedef struct spc_registers_s {
 	Uint16 pc;
 	Uint8 a;
 	Uint8 x;
 	Uint8 y;
-	Uint8 psw;
+	spc_flags_t psw;
 	Uint8 sp;
 	Uint8 reserved[2];
 } spc_registers_t;
@@ -64,6 +80,44 @@ typedef struct spc_file_s {
 	Uint8 extra_ram[64];
 } spc_file_t;
 
+typedef struct spc_state_s {
+	spc_registers_t *regs;
+	Uint8 *ram;
+	Uint8 *dsp_registers;
+} spc_state_t;
+
+char *flags_str(spc_flags_t flags)
+{
+	static char buf[10];
+
+	char *ptr = buf;
+
+        *ptr++ = '[';
+	*ptr++ = flags.f.n ? 'n' : ' ';
+	*ptr++ = flags.f.v ? 'v' : ' ';
+	*ptr++ = flags.f.p ? 'p' : ' ';
+	*ptr++ = flags.f.b ? 'b' : ' ';
+	*ptr++ = flags.f.h ? 'h' : ' ';
+	*ptr++ = flags.f.i ? 'i' : ' ';
+	*ptr++ = flags.f.z ? 'z' : ' ';
+	*ptr++ = flags.f.c ? 'c' : ' ';
+	*ptr++ = ']';
+	*ptr++ = '\0';
+
+	/*
+	printf("%s", flags.n ? "n" : " ");
+	printf("%s", flags.v ? "v" : " ");
+	printf("%s", flags.p ? "p" : " ");
+	printf("%s", flags.b ? "b" : " ");
+	printf("%s", flags.h ? "h" : " ");
+	printf("%s", flags.i ? "i" : " ");
+	printf("%s", flags.z ? "z" : " ");
+	printf("%s", flags.c ? "c" : " ");
+	*/
+
+	return(buf);
+}
+
 void dump_registers(spc_registers_t *registers)
 {
 	printf("== Registers==\n");
@@ -71,7 +125,7 @@ void dump_registers(spc_registers_t *registers)
 	printf("A  : %u (0x%02X)\n", registers->a, registers->a);
 	printf("X  : %u (0x%02X)\n", registers->x, registers->x);
 	printf("Y  : %u (0x%02X)\n", registers->y, registers->y);
-	printf("PSW: %u (0x%02X)\n", registers->psw, registers->psw);
+	printf("PSW: 0x%02X %s\n", registers->psw.val, flags_str(registers->psw));
 	printf("SP : %u (0x%02X)\n", registers->sp, registers->sp);
 	//printf("Reserved[0]: %u (%02X)", registers->reserved[0], registers->reserved[0]);
 }
@@ -80,10 +134,34 @@ void dump_registers(spc_registers_t *registers)
 int dump_instruction(Uint16 pc, Uint8 *ram)
 {
 	Uint8 opcode = ram[pc];
-	int bytes = 1;
+	opcode_t *op = NULL;
+	int x;
 
 	printf("%04X  ", pc);
 
+	for (x = 0; x < OPCODE_TABLE_LEN; x++) {
+		if (opcode_table[x].opcode == opcode) {
+			op = &opcode_table[x];
+			break;
+		}
+	}
+
+	if (op == NULL) {
+		printf("Unknown opcode: 0x%02X\n", opcode);
+		return(1);
+	}
+
+	for (x = 0; x < op->bytes; x++)
+		printf("%02X ", ram[pc + x]);
+
+	// Space padding
+	x = 5 - op->bytes;
+	while (x-- > 0)
+		printf("   ");
+
+	printf(" %s\n", op->name);
+
+/*
 	switch(opcode) {
 		case 0x6B: // RORZ
 			bytes = 2;
@@ -103,8 +181,9 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		default:
 			printf("Unknown: %02X\n", opcode);
 	}
+*/
 
-	return(bytes);
+	return(op->bytes);
 }
 
 spc_file_t *read_spc_file(char *filename)
@@ -149,14 +228,15 @@ spc_file_t *read_spc_file(char *filename)
 	ptr++;
 
 	memcpy(&spc->registers.pc, ptr, 2);
-	spc->registers.pc = ntohs(spc->registers.pc);
+	// spc->registers.pc = ntohs(spc->registers.pc);
 
 	ptr += 2;
 
 	spc->registers.a = *ptr++;
 	spc->registers.x = *ptr++;
 	spc->registers.y = *ptr++;
-	spc->registers.psw = *ptr++;
+	memcpy(&spc->registers.psw, ptr++, 1);
+	//spc->registers.psw = *ptr++;
 	spc->registers.sp = *ptr++;
 	spc->registers.reserved[0] = *ptr++;
 	spc->registers.reserved[1] = *ptr++;
@@ -208,16 +288,25 @@ int main (int argc, char *argv[])
 		exit(1);
 	}
 
+	printf("si: %lu\n", sizeof(spc_flags_t));
+
 	reg = &spc_file->registers;
 	ram = spc_file->ram;
 
-	dump_registers(&spc_file->registers);
+	dump_registers(reg);
+
+	reg->psw.f.p = 1;
+
+	dump_registers(reg);
+
+	reg->psw.f.v = 1;
+	dump_registers(reg);
 
 	byte = ram[reg->pc];
 
 	int x;
 	for (x = 0; x < 10; x++) {
-		printf("[%d] %02X\n", x, ram[x + reg->pc]);
+		// printf("[%d] %02X\n", x, ram[x + reg->pc]);
 	}
 
 	for (x = 0; x < 10; x++) {
