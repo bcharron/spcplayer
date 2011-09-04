@@ -13,5 +13,5 @@ spcplayer.o: spcplayer.c
 clean:
 	rm -f spcplayer *.o
 
-#test:
-	#./spcplayer ../examples/ru4this.mod
+test:
+	./spcplayer srb-02.spc
