@@ -21,6 +21,14 @@
  * Revision : $Id$
  */
 
+/*
+  Assembler notes:
+  MOV X, A    ; Register X = A
+  MOV Y, #$12 ; Register Y = 0x12 (#$xx == immediate)
+  MOV Y, $12  ; Register Y = ram[0x12] ($xx == memory offset)
+  MOV ($12)+Y, A ; Not sure! Maybe ram[ram[0x12] + Y] = A?
+*/
+
 #include <stdio.h>
 #include <sys/time.h>
 #include <errno.h>
@@ -182,15 +190,60 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		return(1);
 	}
 
-	for (x = 0; x < op->bytes; x++)
+	for (x = 0; x < op->len; x++)
 		printf("%02X ", ram[pc + x]);
 
 	// Space padding
-	x = 5 - op->bytes;
+	x = 5 - op->len;
 	while (x-- > 0)
 		printf("   ");
 
-	printf(" %s\n", op->name);
+	char str[128];
+
+	switch(op->len) {
+		case 1:
+		{
+			snprintf(str, sizeof(str), "%s", op->name);
+			break;
+		}
+
+		case 2:
+		{
+			snprintf(str, sizeof(str), op->name, ram[pc + 1]);
+			break;
+		}
+
+		case 3:
+		{
+			snprintf(str, sizeof(str), op->name, ram[pc + 2], ram[pc + 1]);
+			break;
+		}
+
+		default:
+		{
+			break;
+		}
+		
+	}
+
+	printf("%s", str);
+
+	switch(opcode) {
+		case 0xF0: // BEQ
+		{
+			// No idea why this is +2 rather than +1 or +0. I guess the operand is
+			// part of the pc increment?
+			printf(" ($%04X)", pc + ram[pc + 1] + 2);
+			break;
+		}
+
+		default:
+			break;
+	}
+
+	printf("\n");
+
+		// printf(" %s\n", op->name);
 
 /*
 	switch(opcode) {
@@ -214,7 +267,7 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 	}
 */
 
-	return(op->bytes);
+	return(op->len);
 }
 
 spc_file_t *read_spc_file(char *filename)
@@ -259,15 +312,14 @@ spc_file_t *read_spc_file(char *filename)
 	ptr++;
 
 	memcpy(&spc->registers.pc, ptr, 2);
-	// spc->registers.pc = ntohs(spc->registers.pc);
+	spc->registers.pc = ntohs(spc->registers.pc);
 
 	ptr += 2;
 
 	spc->registers.a = *ptr++;
 	spc->registers.x = *ptr++;
 	spc->registers.y = *ptr++;
-	memcpy(&spc->registers.psw, ptr++, 1);
-	//spc->registers.psw = *ptr++;
+	spc->registers.psw.val = *ptr++;
 	spc->registers.sp = *ptr++;
 	spc->registers.reserved[0] = *ptr++;
 	spc->registers.reserved[1] = *ptr++;
@@ -331,12 +383,12 @@ int main (int argc, char *argv[])
 
 	int x;
 	int inc = 0;
-	for (x = 0; x < 10; x++) {
+	for (x = 0; x < 100; x++) {
 		inc += dump_instruction(state.regs->pc + inc, state.ram);
 	}
 
-	do_beq(&state, state.ram[state.regs->pc + 1]);
-	dump_registers(state.regs);
+	//do_beq(&state, state.ram[state.regs->pc + 1]);
+	//dump_registers(state.regs);
 
 	dump_instruction(state.regs->pc, state.ram);
 

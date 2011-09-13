@@ -8,7 +8,7 @@ all: spcplayer
 
 spcplayer: spcplayer.o
 
-spcplayer.o: spcplayer.c
+spcplayer.o: spcplayer.c opcode_table.h
 
 clean:
 	rm -f spcplayer *.o
