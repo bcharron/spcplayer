@@ -16,4 +16,4 @@ clean:
 	rm -f spcplayer spc-disasm *.o
 
 test:
-	./spcplayer srb-02.spc
+	./spcplayer spc/srb-02.spc
