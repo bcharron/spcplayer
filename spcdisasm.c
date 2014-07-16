@@ -37,13 +37,18 @@ int main (int argc, char *argv[])
 	unsigned char buf[16];
 	int len;
 	int pos;
+	int start_offset = 0;
 
-	if (argc != 2) {
+	if (argc < 2 || argc > 3) {
 		usage(argv[0]);
 		exit(1);
 	}
 
 	filename = argv[1];
+	
+	if (argc == 3) {
+		start_offset = atoi(argv[2]);
+	}
 	
 	f = fopen(filename, "r");
 	if (! f) {
@@ -51,9 +56,17 @@ int main (int argc, char *argv[])
 		exit(1);
 	}
 
+	/* Skip header */
+	fseek(f, 0x100, SEEK_SET);
+
 	pos = 0;
 
-	while (! feof(f)) {
+	if (start_offset > 0) {
+		pos = start_offset;
+		fseek(f, 0x100 + start_offset, SEEK_SET);
+	}
+
+	while (! feof(f) && pos <= 0xFFFF) {
 		len = fread(buf, 1, 1, f);
 		if (len != 1) {
 			printf("End of file.\n");
@@ -98,7 +111,11 @@ int main (int argc, char *argv[])
 
 				case 3:
 				{
-					snprintf(str, sizeof(str), opcode_ptr->name, buf[2], buf[3]);
+					/* XXX: This disassembly isn't always
+					 * correct. ie, "8F AA F4" is
+					 * disassembled as "MOV $AA,#$F4"
+					 * instead of "MOV $F4,#$AA" */
+					snprintf(str, sizeof(str), opcode_ptr->name, buf[1], buf[2]);
 					break;
 				}
 
@@ -109,7 +126,7 @@ int main (int argc, char *argv[])
 				}
 			}
 
-			printf("%04X   ", pos);
+			printf("$%04X   ", pos);
 			for (x = 0; x < opcode_ptr->len; x++)
 				printf("%02X ", buf[x]);
 
