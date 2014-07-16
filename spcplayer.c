@@ -35,7 +35,7 @@
 #include <arpa/inet.h>
 #include <SDL/SDL.h>
 
-#include "opcode_table.h"
+#include "opcodes.h"
 
 #define SPC_HEADER_LEN 33
 #define SPC_HEADER_CONTAINS_ID_TAG
@@ -179,8 +179,8 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 	printf("%04X  ", pc);
 
 	for (x = 0; x < OPCODE_TABLE_LEN; x++) {
-		if (opcode_table[x].opcode == opcode) {
-			op = &opcode_table[x];
+		if (OPCODE_TABLE[x].opcode == opcode) {
+			op = &OPCODE_TABLE[x];
 			break;
 		}
 	}

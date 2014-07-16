@@ -23,7 +23,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include "opcode_table.h"
+#include "opcodes.h"
 
 void usage(char *argv0)
 {
@@ -67,8 +67,8 @@ int main (int argc, char *argv[])
 		opcode_t *opcode_ptr = NULL;
 
 		for (x = 0; x < OPCODE_TABLE_LEN; x++) {
-			if (opcode_table[x].opcode == opcode) {
-				opcode_ptr = &opcode_table[x];
+			if (OPCODE_TABLE[x].opcode == opcode) {
+				opcode_ptr = &OPCODE_TABLE[x];
 				break;
 			}
 		}
@@ -120,7 +120,7 @@ int main (int argc, char *argv[])
 		}
 
 		if (opcode_ptr)
-			pos += opcode_ptr->len + 1;
+			pos += opcode_ptr->len;
 		else
 			pos++;
 	}

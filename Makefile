@@ -4,16 +4,20 @@ LDFLAGS=-lSDL
 # For OSX
 #LDFLAGS=`/opt/local/bin/sdl-config --libs`
 
-all: spcplayer
+all: spcplayer spcdisasm
 
-spcplayer: spcplayer.o
+spcplayer: spcplayer.o opcodes.o
 
-spcplayer.o: spcplayer.c opcode_table.h
+opcodes.o: opcodes.c opcodes.h
 
-spc-disasm: spc-disasm.c
+spcplayer.o: spcplayer.c opcodes.h
+
+spcdisasm.o: spcdisasm.c
+
+spcdisasm: spcdisasm.o opcodes.o
 
 clean:
-	rm -f spcplayer spc-disasm *.o
+	rm -f spcplayer spcdisasm *.o
 
 test:
 	./spcplayer spc/srb-02.spc

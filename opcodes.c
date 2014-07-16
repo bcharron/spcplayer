@@ -1,12 +1,6 @@
-#define OPCODE_TABLE_LEN (sizeof(opcode_table) / sizeof(opcode_t))
+#include "opcodes.h"
 
-typedef struct opcode_s {
-	char *name;
-	int opcode;
-	int len;
-} opcode_t;
-
-opcode_t opcode_table[] = {
+opcode_t OPCODE_TABLE[256] = {
 	{ "ADC A,(X)", 0x86, 1 },
 	{ "ADC A,[$%02X+X]", 0x87, 2 },
 	{ "ADC A,#$%02X", 0x88, 2 },
