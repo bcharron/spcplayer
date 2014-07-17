@@ -19,5 +19,8 @@ spcdisasm: spcdisasm.o opcodes.o
 clean:
 	rm -f spcplayer spcdisasm *.o
 
-test:
+dtest: spcdisasm
+	./spcdisasm spc/srb-02.spc 65472 
+
+test: spcplayer
 	./spcplayer spc/srb-02.spc

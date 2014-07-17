@@ -115,7 +115,7 @@ int main (int argc, char *argv[])
 					 * correct. ie, "8F AA F4" is
 					 * disassembled as "MOV $AA,#$F4"
 					 * instead of "MOV $F4,#$AA" */
-					snprintf(str, sizeof(str), opcode_ptr->name, buf[1], buf[2]);
+					snprintf(str, sizeof(str), opcode_ptr->name, buf[2], buf[1]);
 					break;
 				}
 
@@ -124,6 +124,16 @@ int main (int argc, char *argv[])
 					fprintf(stderr, "Error: Instruction 0x%02X has %d bytes. Expected between 1 and 3.\n", opcode, opcode_ptr->len);
 					break;
 				}
+			}
+
+			switch(opcode) {
+				case 0x2F:
+				case 0xD0:
+					snprintf(str, sizeof(str), opcode_ptr->name, pos + (char) buf[1] + 2);
+					break;
+
+				default:
+					break;
 			}
 
 			printf("$%04X   ", pos);
