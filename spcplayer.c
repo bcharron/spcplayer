@@ -164,11 +164,24 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(ret);
 }
 
+int do_bcc(spc_state_t *state, Uint8 operand1)
+{
+	int cycles = 2;
+
+	if (! state->regs->psw.f.c) {
+		state->regs->pc += (Sint8) operand1 + 2;
+		printf("Jumping to 0x%04X\n", state->regs->pc);
+	} else {
+		state->regs->pc += 2;
+		cycles = 4;
+	}
+
+	return(cycles);
+}
 
 int do_beq(spc_state_t *state, Uint8 operand1)
 {
 	int cycles = 2;
-	// printf("BEQ 0x%02X\n", operand1);
 
 	if (state->regs->psw.f.z) {
 		state->regs->pc += (Sint8) operand1 + 2;
@@ -176,6 +189,42 @@ int do_beq(spc_state_t *state, Uint8 operand1)
 	} else {
 		state->regs->pc += 2;
 		cycles = 4;
+	}
+
+	return(cycles);
+}
+
+/* Jump if bit 'bit' of the addr is clear */
+int do_bbc(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
+	int cycles;
+	Uint8 test;
+	
+	test = 1 << bit;
+
+	if (state->ram[src_addr] & test) {
+		cycles = 5;
+	} else {
+		state->regs->pc += (Sint8) rel + 3;
+		printf("Jumping to 0x%04X\n", state->regs->pc);
+		cycles = 7;
+	}
+
+	return(cycles);
+}
+
+/* Jump if bit 'bit' of the addr is set */
+int do_bbs(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
+	int cycles;
+	Uint8 test;
+	
+	test = 1 << bit;
+
+	if (state->ram[src_addr] & test) {
+		state->regs->pc += (Sint8) rel + 3;
+		printf("Jumping to 0x%04X\n", state->regs->pc);
+		cycles = 7;
+	} else {
+		cycles = 5;
 	}
 
 	return(cycles);
@@ -190,9 +239,29 @@ void instr_or(spc_state_t *state, Uint8 *operand1, Uint8 operand2)
 	state->regs->psw.f.z = (*operand1 == 0);
 }
 
+Uint8 do_adc(spc_state_t *state, Uint8 dst, Uint8 operand) {
+	Uint16 result;
+	Sint16 sResult;
+	Uint8 ret;
+
+	sResult = (int8_t) dst + (int8_t) operand + state->regs->psw.f.c;
+	result = dst + operand + state->regs->psw.f.c;
+	ret = (result & 0x00FF);
+	state->regs->psw.f.c = (result > 0xFF);
+
+	// One reference says "result == 0", but I think it would
+	// makes more sense if "A == 0", since for other operations is
+	// essentially checks if <reg> is zero.
+	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
+	state->regs->psw.f.z = (ret == 0);  // 65C02 mode. In 6502, 'result' is tested.
+	state->regs->psw.f.n = ((ret & 0x80) != 0);
+
+	return(ret);
+}
+
 Uint8 do_sbc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 	Uint16  result;
-	Uint16 sResult;
+	Sint16 sResult;
 	Uint8 ret;
 
 	result = dst - operand - (! state->regs->psw.f.c);
@@ -255,10 +324,32 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 	opcode_ptr = get_opcode_by_value(opcode);
 
 	switch(opcode) {
+		case 0x03: // BBS0 $00xx, $yy
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 0, dp_addr, operand2);
+			break;
+
+		case 0x13: // BBC0 $00xx, $yy
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 0, dp_addr, operand2);
+			break;
+
+		case 0x1C: // ASL A
+			state->regs->psw.f.c = (state->regs->a & 0x80) > 0;
+			state->regs->a = state->regs->a << 1;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
 		case 0x24: // ANDZ A, $xx
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a &= val;
 			cycles = 2;
+			break;
+
+		case 0x33: // BBC1 $00xx, $yy
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 1, dp_addr, operand2);
 			break;
 
 		case 0x5C: // LSR A
@@ -284,13 +375,27 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x90: // BCC
+			cycles = do_bcc(state, state->ram[addr + 1]);
+			break;
+
+		case 0x96: // ADC A, $xxxx + Y
+			abs_addr = make16(operand2, operand1);
+			abs_addr += state->regs->y;
+
+			val = state->ram[abs_addr];
+			
+			state->regs->a = do_adc(state, state->regs->a, val);
+			cycles = 5;
+			break;
+
 		case 0x9F: // XCN A
 			state->regs->a = ((state->regs->a << 4) & 0xF0) | (state->regs->a >> 4);
 			adjust_flags(state, state->regs->a);
 			cycles = 5;
 			break;
 
-		case 0xB6: // SBC A, $xx + Y
+		case 0xB6: // SBC A, $xxxx + Y
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->y;
 
@@ -381,7 +486,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 	/* Increment PC if not a branch */
 	switch(opcode) {
-		case 0xF0:
+		case 0x03: // BBS0
+		case 0x13: // BBC0
+		case 0x33: // BBC1
+		case 0x90: // BCC
+		case 0xF0: // BEQ
 			// PC already modified accordingly.
 			break;
 
@@ -475,12 +584,20 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 	printf("%s", str);
 
 	switch(opcode) {
+		case 0x13: // BBC0
+		case 0x33: // BBC1
+		{
+			printf(" ($%04X)", pc + 3 + (Sint8) ram[pc + 2]);
+		}
+		break;
+
+		case 0x90: // BCC
 		case 0xF0: // BEQ
 		{
 			// +2 because the operands have been read when the CPU gets ready to jump
 			printf(" ($%04X)", pc + ram[pc + 1] + 2);
-			break;
 		}
+		break;
 
 		default:
 			break;
@@ -728,16 +845,20 @@ int main (int argc, char *argv[])
 				case 'd': // disasm
 				{
 					Uint16 addr;
+					int len;
+					int x;
 					char *ptr = strchr(input, ' ');
 
 					if (ptr) {
 						addr = (Uint16) strtol(ptr, NULL, 16);
-						dump_instruction(addr, state.ram);
 					} else {
 						addr = state.regs->pc;
 					}
 
-					dump_instruction(addr, state.ram);
+					for (x = 0; x < 15; x++) {
+						len = dump_instruction(addr, state.ram);
+						addr = addr + len;
+					}
 				}
 				break;
 
