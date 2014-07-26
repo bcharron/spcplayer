@@ -165,17 +165,20 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 }
 
 
-void do_beq(spc_state_t *state, Uint8 operand1)
+int do_beq(spc_state_t *state, Uint8 operand1)
 {
+	int cycles = 2;
 	// printf("BEQ 0x%02X\n", operand1);
 
 	if (state->regs->psw.f.z) {
-		state->cycle += 2;
 		state->regs->pc += (Sint8) operand1 + 2;
 		printf("Jumping to 0x%04X\n", state->regs->pc);
 	} else {
 		state->regs->pc += 2;
+		cycles = 4;
 	}
+
+	return(cycles);
 }
 
 void instr_or(spc_state_t *state, Uint8 *operand1, Uint8 operand2)
@@ -265,6 +268,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x60: // CLRC
+			state->regs->psw.f.c = 0;
+			cycles = 2;
+			break;
+
 		case 0x7D: // MOV A, X
 			state->regs->a = state->regs->x;
 			adjust_flags(state, state->regs->a);
@@ -273,6 +281,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x80: // SETC
 			state->regs->psw.f.c = 1;
+			cycles = 2;
 			break;
 
 		case 0x9F: // XCN A
@@ -289,6 +298,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			
 			state->regs->a = do_sbc(state, state->regs->a, val);
 			// state->regs->a = state->regs->a - val - state->regs->psw.f.c;
+			cycles = 5;
 			break;
 
 		case 0xC4: // MOVZ $xx, A
@@ -296,6 +306,32 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->ram[dp_addr] = state->regs->a;
 			cycles = 4;
 			break;
+
+		case 0xCF: // MUL YA
+		{
+			Uint16 result = state->regs->y * state->regs->a;
+
+			// XXX: Is it the other way around?
+			state->regs->y = (result & 0xFF00) >> 8;
+			state->regs->a = (result & 0x00FF);
+			cycles = 9;
+		}
+		break;
+
+		case 0xDA: // MOVW $xx, YA
+			dp_addr = get_direct_page_addr(state, operand1);
+
+			state->ram[dp_addr] = state->regs->y;
+			state->ram[dp_addr + 1] = state->regs->a;	// XXX: Is it the other way around?
+			cycles = 4;	// XXX: One source says 4, another 5..
+			break;
+
+		case 0xDD: // MOV A, Y
+			state->regs->a = state->regs->y;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
 
 		case 0xE4: // MOVZ A, $xx
 			val = get_direct_page_byte(state, operand1);
@@ -311,16 +347,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
-		case 0xDA: // MOVW $xx, YA
-			dp_addr = get_direct_page_addr(state, operand1);
-
-			state->ram[dp_addr] = state->regs->y;
-			state->ram[dp_addr + 1] = state->regs->a;	// XXX: Is it the other way around?
-			cycles = 4;	// XXX: One source says 4, another 5..
-			break;
-
 		case 0xF0: // BEQ
-			do_beq(state, state->ram[addr + 1]);
+			cycles = do_beq(state, state->ram[addr + 1]);
 			break;
 
 		case 0xF5: // MOV A, $xxxx + X
@@ -361,6 +389,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->pc += opcode_ptr->len;
 			break;
 	}
+
+	assert(cycles > 0);
 
 	state->cycle += cycles;
 
