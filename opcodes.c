@@ -163,7 +163,7 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "MOV [$%02X]+Y,A", 0xD7, 2 },
 	{ "MOV A,[$%02X+X]", 0xE7, 2 },
 	{ "MOV A,[$%02X]+Y", 0xF7, 2 },
-	{ "MOV $%02X+X,A", 0xD5, 3 },
+	{ "MOV $%02X%02X+X,A", 0xD5, 3 },
 	{ "MOVZ $%02X+X,A", 0xD4, 2 },
 	{ "MOV $%02X+Y,A", 0xD6, 3 },
 	{ "MOV $%02X+Y,X", 0xD9, 2 },

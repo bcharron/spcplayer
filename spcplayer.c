@@ -54,6 +54,8 @@
 #define SPC_TAG_DUMPER_NAME_LEN 32
 #define SPC_TAG_COMMENTS_LEN 32
 
+#define SPC_STACK_BASE 0x0100
+
 #define NO_OPERAND 0
 
 /* Passed to functions that may or not update flags */
@@ -118,6 +120,7 @@ int execute_next(spc_state_t *state);
 spc_file_t *read_spc_file(char *filename);
 Uint16 get_direct_page_addr(spc_state_t *state, Uint16 addr);
 Uint8 get_direct_page_byte(spc_state_t *state, Uint16 addr);
+void adjust_flags(spc_state_t *state, Uint16 val);
 
 char *flags_str(spc_flags_t flags)
 {
@@ -147,6 +150,23 @@ uint16_t make16(uint8_t high, uint8_t low) {
 	return(offset);
 }
 
+/* Get low byte of a 16-bit word */
+uint8_t get_low(uint16_t word)
+{
+	uint8_t low = (word & 0x00FF);
+
+	return(low);
+}
+
+/* Get high byte of a 16-bit word */
+uint8_t get_high(uint16_t word)
+{
+	uint8_t high = (word & 0xFF00) >> 8;
+
+	return(high);
+}
+
+
 // XXX: This is dumb. We need a table sorted by opcode rather than mnemonic..
 opcode_t *get_opcode_by_value(Uint8 opcode) {
 	opcode_t *ret = NULL;
@@ -164,8 +184,40 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(ret);
 }
 
-int do_bcc(spc_state_t *state, Uint8 operand1)
-{
+/* Perform the branch if flag 'flag' is set */
+int branch_if_flag(spc_state_t *state, int flag, Uint8 operand1) {
+	int cycles;
+
+	if (flag) {
+		state->regs->pc += (Sint8) operand1 + 2;
+		printf("Jumping to 0x%04X\n", state->regs->pc);
+		cycles = 6;
+	} else {
+		state->regs->pc += 2;
+		cycles = 4;
+	}
+
+	return(cycles);
+}
+
+int branch_if_flag_clear(spc_state_t *state, int flag, Uint8 operand1) {
+	int ret;
+
+	ret = branch_if_flag(state, ! flag, operand1);
+
+	return(ret);
+}
+
+int branch_if_flag_set(spc_state_t *state, int flag, Uint8 operand1) {
+	int ret;
+
+	ret = branch_if_flag(state, flag, operand1);
+
+	return(ret);
+}
+
+/*
+int do_bcc(spc_state_t *state, Uint8 operand1) {
 	int cycles = 2;
 
 	if (! state->regs->psw.f.c) {
@@ -178,7 +230,9 @@ int do_bcc(spc_state_t *state, Uint8 operand1)
 
 	return(cycles);
 }
+*/
 
+/*
 int do_beq(spc_state_t *state, Uint8 operand1)
 {
 	int cycles = 2;
@@ -193,6 +247,7 @@ int do_beq(spc_state_t *state, Uint8 operand1)
 
 	return(cycles);
 }
+*/
 
 /* Jump if bit 'bit' of the addr is clear */
 int do_bbc(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
@@ -203,6 +258,7 @@ int do_bbc(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 
 	if (state->ram[src_addr] & test) {
 		cycles = 5;
+		state->regs->pc += 3;
 	} else {
 		state->regs->pc += (Sint8) rel + 3;
 		printf("Jumping to 0x%04X\n", state->regs->pc);
@@ -224,6 +280,7 @@ int do_bbs(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 		printf("Jumping to 0x%04X\n", state->regs->pc);
 		cycles = 7;
 	} else {
+		state->regs->pc += 3;
 		cycles = 5;
 	}
 
@@ -239,12 +296,81 @@ void instr_or(spc_state_t *state, Uint8 *operand1, Uint8 operand2)
 	state->regs->psw.f.z = (*operand1 == 0);
 }
 
+Uint8 do_pop(spc_state_t *state) {
+	Uint8 ret;
+	Uint16 stack_addr;
+
+	state->regs->sp++;
+	stack_addr = SPC_STACK_BASE + state->regs->sp;
+
+	ret = state->ram[stack_addr];
+
+	return(ret);
+}
+
+void do_push(spc_state_t *state, Uint8 val) {
+	Uint16 stack_addr;
+
+	stack_addr = SPC_STACK_BASE + state->regs->sp;
+
+	state->ram[stack_addr] = val;
+	state->regs->sp--;
+}
+
+void do_ret(spc_state_t *state) {
+	Uint16 ret_addr;
+	Uint8 h, l;
+
+	l = do_pop(state);
+	h = do_pop(state);
+
+	ret_addr = make16(h, l);
+
+	printf("Popped address %04X\n", ret_addr);
+
+	state->regs->pc = ret_addr;
+	printf("Jumping to $%04X\n", state->regs->pc);
+}
+
+void do_call(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
+	Uint16 ret_addr;
+	Uint16 dest_addr;
+
+	ret_addr = state->regs->pc + 3;
+
+	printf("Pushing return address $%04X on the stack\n", ret_addr);
+
+	do_push(state, get_high(ret_addr));
+	do_push(state, get_low(ret_addr));
+
+	dest_addr = make16(operand2, operand1);
+	state->regs->pc = dest_addr;
+
+	printf("Jumping to $%04X\n", state->regs->pc);
+}
+
+/* Update the flags based on (operand1 - operand2) */
+void do_cmp(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
+	Sint16 sResult;
+	Uint16 result;
+	Uint8 temp_result;
+
+	result = operand1 - operand2;
+	sResult = (Sint8) operand1 - (Sint8) operand2;
+	state->regs->psw.f.c = !(result > 0xFF);
+	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
+
+	temp_result = result & 0x00FF;
+
+	adjust_flags(state, temp_result);
+}
+
 Uint8 do_adc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 	Uint16 result;
 	Sint16 sResult;
 	Uint8 ret;
 
-	sResult = (int8_t) dst + (int8_t) operand + state->regs->psw.f.c;
+	sResult = (Sint8) dst + (Sint8) operand + state->regs->psw.f.c;
 	result = dst + operand + state->regs->psw.f.c;
 	ret = (result & 0x00FF);
 	state->regs->psw.f.c = (result > 0xFF);
@@ -265,7 +391,7 @@ Uint8 do_sbc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 	Uint8 ret;
 
 	result = dst - operand - (! state->regs->psw.f.c);
-	sResult = (Uint8) dst - (Uint8) operand - (! state->regs->psw.f.c);
+	sResult = (Sint8) dst - (Sint8) operand - (! state->regs->psw.f.c);
 	ret = result & 0x00FF;
 
 	state->regs->psw.f.c = !(result > 0xFF);
@@ -275,6 +401,31 @@ Uint8 do_sbc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 
 	return(ret);
 }
+
+Uint16 do_sub_ya(spc_state_t *state, Uint16 val) {
+	unsigned int result;
+	Uint16 ya;
+	Uint16 ret;
+	int sResult;
+
+	ya = make16(state->regs->y, state->regs->a);
+
+	result = ya - val;
+	printf("Result: %08x\n", result);
+	sResult = ya - val;
+	ret = (Uint16) (result & 0xFFFF);
+
+	state->regs->psw.f.c = !(result > 0xFFFF);
+	state->regs->psw.f.n = ((ret & 0x80) != 0);
+	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
+	state->regs->psw.f.z = (ret == 0);
+
+	state->regs->y = get_high(ret);
+	state->regs->a = get_low(ret);
+
+	return(ret);
+}
+
 
 /* Flag 'P' can change if $00 means $0000 or $0100 */
 Uint16 get_direct_page_addr(spc_state_t *state, Uint16 addr) {
@@ -313,6 +464,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 	Uint8 val;
 	opcode_t *opcode_ptr;
 	int cycles = 0;
+	int pc_adjusted = 0;
 
 	// dump_registers(state->regs);
 	// dump_instruction(addr, state->ram);
@@ -327,11 +479,28 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x03: // BBS0 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbs(state, 0, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
+
+		case 0x04: // ORZ A, $E8
+			val = get_direct_page_byte(state, operand1);
+			state->regs->a |= val;
+			adjust_flags(state, state->regs->a);
+			cycles = 3;
+			break;
+
+		case 0x0B: // ASL $xx
+			dp_addr = get_direct_page_addr(state, operand1);
+			state->regs->psw.f.c = (state->ram[dp_addr] & 0x80) > 0;
+			state->ram[dp_addr] <<= 1;
+			adjust_flags(state, state->ram[dp_addr]);
+			cycles = 4;
 			break;
 
 		case 0x13: // BBC0 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 0, dp_addr, operand2);
+			pc_adjusted = 1;
 			break;
 
 		case 0x1C: // ASL A
@@ -347,9 +516,32 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x2D: // PUSH A
+			do_push(state, state->regs->a);
+			cycles = 4;
+			break;
+
+		case 0x2F: // BRA xx
+			branch_if_flag(state, 1, operand1);
+			cycles = 4;
+			break;	
+
 		case 0x33: // BBC1 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 1, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
+
+		case 0x3D: // INC X
+			state->regs->x++;
+			adjust_flags(state, state->regs->x);
+			cycles = 2;
+			break;
+
+		case 0x3F: // CALL $xxyy
+			do_call(state, operand1, operand2);
+			cycles = 8;
+			pc_adjusted = 1;
 			break;
 
 		case 0x5C: // LSR A
@@ -363,6 +555,25 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->psw.f.c = 0;
 			cycles = 2;
 			break;
+		
+		case 0x68: //  CMP A, #$xx
+			do_cmp(state, state->regs->a, operand1);
+			cycles = 2;
+			break;
+
+		case 0x6F: // RET
+			do_ret(state);
+			cycles = 5;
+			pc_adjusted = 1;
+			break;
+
+		case 0x75: // CMP A, $xxyy + X
+			abs_addr = make16(operand2, operand1);
+			abs_addr += state->regs->x;
+
+			do_cmp(state, state->regs->a, state->ram[abs_addr]);
+			cycles = 5;
+			break;
 
 		case 0x7D: // MOV A, X
 			state->regs->a = state->regs->x;
@@ -375,8 +586,16 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x8D: // MOV Y,#$xx
+			state->regs->y = operand1;
+			adjust_flags(state, state->regs->y);
+			cycles = 2;
+			break;
+
 		case 0x90: // BCC
-			cycles = do_bcc(state, state->ram[addr + 1]);
+			// cycles = do_bcc(state, state->ram[addr + 1]);
+			cycles = branch_if_flag_clear(state, state->regs->psw.f.c, operand1);
+			pc_adjusted = 1;
 			break;
 
 		case 0x96: // ADC A, $xxxx + Y
@@ -389,10 +608,34 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0x9A: // SUBW YA, $xx
+		{
+			Uint8 l = get_direct_page_byte(state, operand1);
+			Uint8 h = get_direct_page_byte(state, operand1 + 1);
+
+			Uint16 operand = make16(h, l);
+
+			do_sub_ya(state, operand);
+			cycles = 5;
+		}
+		break;
+
 		case 0x9F: // XCN A
 			state->regs->a = ((state->regs->a << 4) & 0xF0) | (state->regs->a >> 4);
 			adjust_flags(state, state->regs->a);
 			cycles = 5;
+			break;
+
+		case 0xAB: // INC $xx
+			dp_addr = get_direct_page_addr(state, operand1);
+			state->ram[dp_addr]++;
+			adjust_flags(state, state->ram[dp_addr]);
+			cycles = 4;
+			break;
+
+		case 0xAE: // POP A
+			state->regs->a = do_pop(state);
+			cycles = 4;
 			break;
 
 		case 0xB6: // SBC A, $xxxx + Y
@@ -412,22 +655,59 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xC5: // MOV $xxxx, A
+			abs_addr = make16(operand2, operand1);
+			state->ram[abs_addr] = state->regs->a;
+			cycles = 5;
+			break;
+
+		case 0xCC: // MOV $xxxx, Y
+			abs_addr = make16(operand2, operand1);
+			state->ram[abs_addr] = state->regs->y;
+			cycles = 5;
+			break;
+
+		case 0xCD: // MOV X, #$xx
+			state->regs->x = operand1;
+			adjust_flags(state, state->regs->x);
+			cycles = 2;
+			break;
+
 		case 0xCF: // MUL YA
 		{
 			Uint16 result = state->regs->y * state->regs->a;
 
 			// XXX: Is it the other way around?
-			state->regs->y = (result & 0xFF00) >> 8;
-			state->regs->a = (result & 0x00FF);
+			state->regs->y = get_high(result);
+			state->regs->a = get_low(result);
 			cycles = 9;
 		}
 		break;
 
+		case 0xD0: // BNE $xx
+			// cycles = do_bne(state, operand1);
+			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
+			pc_adjusted = 1;
+			break;
+
+		case 0xD4: // MOVZ $xx + X, A
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+			state->ram[dp_addr] = state->regs->a;
+			cycles = 5;
+			break;
+
+		case 0xD5: // MOV $xxxx + X, A
+			abs_addr = make16(operand2, operand1);
+			abs_addr += state->regs->x;
+			state->ram[abs_addr] = state->regs->a;
+			cycles = 6;
+			break;
+
 		case 0xDA: // MOVW $xx, YA
 			dp_addr = get_direct_page_addr(state, operand1);
-
-			state->ram[dp_addr] = state->regs->y;
-			state->ram[dp_addr + 1] = state->regs->a;	// XXX: Is it the other way around?
+			state->ram[dp_addr + 1] = state->regs->y;
+			state->ram[dp_addr] = state->regs->a;	// XXX: Is it the other way around?
 			cycles = 4;	// XXX: One source says 4, another 5..
 			break;
 
@@ -445,6 +725,19 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0xE5: // MOV A, $xxxx
+			abs_addr = make16(operand2, operand1);
+			state->regs->a = state->ram[abs_addr];
+			adjust_flags(state, state->regs->a);
+			cycles = 4;
+			break;
+
+		case 0xE8: // MOV A, #$xx
+			state->regs->a = operand1;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
 		case 0xEB: // MOV Y, $xx
 			val = get_direct_page_byte(state, operand1);
 			state->regs->y = val;
@@ -453,7 +746,17 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0xF0: // BEQ
-			cycles = do_beq(state, state->ram[addr + 1]);
+			// cycles = do_beq(state, operand1);
+			cycles = branch_if_flag_set(state, state->regs->psw.f.z, operand1);
+			pc_adjusted = 1;
+			break;
+
+		case 0xF4: // MOVZ A, $xx + X
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+			state->regs->a = state->ram[dp_addr];
+			adjust_flags(state, state->regs->a);
+			cycles = 4;
 			break;
 
 		case 0xF5: // MOV A, $xxxx + X
@@ -471,6 +774,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			adjust_flags(state, state->regs->a);
 			cycles = 5;
 			break;
+
+		case 0xFB: // MOVZ Y, $xx + X
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+			state->regs->y = state->ram[dp_addr];
+			adjust_flags(state, state->regs->y);
+			cycles = 4;
+			break;
 			
 		case 0xFD: // MOV Y, A
 			state->regs->y = state->regs->a;
@@ -485,18 +796,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 	}
 
 	/* Increment PC if not a branch */
-	switch(opcode) {
-		case 0x03: // BBS0
-		case 0x13: // BBC0
-		case 0x33: // BBC1
-		case 0x90: // BCC
-		case 0xF0: // BEQ
-			// PC already modified accordingly.
-			break;
-
-		default:
-			state->regs->pc += opcode_ptr->len;
-			break;
+	if (! pc_adjusted) {
+		state->regs->pc += opcode_ptr->len;
 	}
 
 	assert(cycles > 0);
@@ -591,7 +892,14 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		}
 		break;
 
+		case 0x10: // BPL
+		case 0x2F: // BRA
+		case 0x30: // BMI
+		case 0x50: // BVC
+		case 0x70: // BVS
 		case 0x90: // BCC
+		case 0xB0: // BCS
+		case 0xD0: // BNE
 		case 0xF0: // BEQ
 		{
 			// +2 because the operands have been read when the CPU gets ready to jump
