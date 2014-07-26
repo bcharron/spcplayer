@@ -903,7 +903,7 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		case 0xF0: // BEQ
 		{
 			// +2 because the operands have been read when the CPU gets ready to jump
-			printf(" ($%04X)", pc + ram[pc + 1] + 2);
+			printf(" ($%04X)", pc + (Sint8) ram[pc + 1] + 2);
 		}
 		break;
 
@@ -1100,12 +1100,12 @@ int main (int argc, char *argv[])
 		exit(1);
 	}
 
-	printf("si: %lu\n", sizeof(spc_flags_t));
-
 	state.regs = &spc_file->registers;
 	state.ram = spc_file->ram;
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
+
+	printf("PC: $%04X\n", state.regs->pc);
 
 	while (! quit) {
 		if (state.regs->pc == break_addr) {
