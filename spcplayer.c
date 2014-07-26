@@ -187,111 +187,6 @@ void instr_or(spc_state_t *state, Uint8 *operand1, Uint8 operand2)
 	state->regs->psw.f.z = (*operand1 == 0);
 }
 
-/*
-void do_or(spc_state_t *state, Uint8 opcode)
-{
-	Uint16 operand16;
-
-	switch(opcode) {
-		case 0x04:
-			instr_or(state, &state->regs->a, state->ram[state->regs->pc + 1]);
-			break;
-
-		case 0x05:
-			memcpy(&operand16, &state->ram[state->regs->pc + 1], 2);
-			instr_or(state, &state->regs->a, state->ram[operand16]);
-			break;
-
-		case 0x06:
-			instr_or(state, &state->regs->a, state->ram[state->regs->x]);
-			break;
-	}
-}
-*/
-
-/*
-void do_and(spc_state_t *state, Uint8 opcode, Uint8 operand1, Uint8 operand2) {
-	Uint8 val;
-	opcode_t *opcode_ptr;
-
-	switch(opcode) {
-		case 0x24: // ANDZ A,$xx
-			val = get_direct_page_byte(state, operand1);
-			state->regs->a &= val;
-			state->cycle += 2;
-			break;
-
-		default:
-			fprintf(stderr, "Invalid opcode, %02X\n", opcode);
-			break;
-	}
-
-	// state->regs->pc += OPCODE_TABLE[opcode].len;
-	opcode_ptr = get_opcode_by_value(opcode);
-	state->regs->pc += opcode_ptr->len;
-}
-*/
-
-/*
-void instr_mov(spc_state_t *state, Uint8 *dst, Uint8 src, int adjust_flags)
-{
-	*dst = src;
-
-	state->regs->psw.f.n = (*dst & 0x80) > 0;
-	state->regs->psw.f.z = (*dst == 0);
-}
-*/
-
-/*
-void do_mov(spc_state_t *state, Uint8 opcode, Uint8 operand1, Uint8 operand2) {
-	Uint8 val;
-	Uint16 addr;
-	opcode_t *opcode_ptr;
-
-	switch(opcode) {
-		case 0x7D: // MOV A,X
-			instr_mov(state, &state->regs->a, state->regs->x, ADJUST_FLAGS);
-			state->cycle += 2;
-			break;
-
-		case 0xE4: // MOVZ A, $xx
-			// state->regs->a = state->ram[operand1];		
-			val = get_direct_page_byte(state, operand1);
-			instr_mov(state, &state->regs->a, val, ADJUST_FLAGS);
-			state->cycle += 4;
-			break;
-
-		case 0xF5: // MOV A, $xxxx + X
-			addr = make16(operand2, operand1);
-			addr += state->regs->x;
-			instr_mov(state, &state->regs->a, state->ram[addr], ADJUST_FLAGS);
-			state->cycle += 5;
-			break;
-
-		case 0xFD: // MOV Y, A
-			instr_mov(state, &state->regs->y, state->regs->a, ADJUST_FLAGS);
-			state->cycle += 2;
-			break;
-
-		case 0xDA: // MOVW $xx, YA
-			addr = get_direct_page_addr(state, operand1);
-
-			instr_mov(state, &state->ram[addr], state->regs->y, DONT_ADJUST_FLAGS);
-			instr_mov(state, &state->ram[addr + 1], state->regs->a, DONT_ADJUST_FLAGS);
-			state->cycle += 4;	// XXX: One source says 4, another 5..
-			break;
-
-		default:
-			fprintf(stderr, "Invalid opcode, %02X\n", opcode);
-			break;
-	}
-
-	opcode_ptr = get_opcode_by_value(opcode);
-
-	state->regs->pc += opcode_ptr->len;
-}
-*/
-
 Uint8 do_sbc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 	Uint16  result;
 	Uint16 sResult;
@@ -557,47 +452,11 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 			break;
 		}
 
-		/*
-		case 0xF5: // MOV A, $xxxx + X
-		{
-			Uint16 addr = make16(ram[pc + 2], ram[pc + 1]);
-			Uint8 h = ram[addr + 1];
-			Uint8 l = ram[addr];
-			Uint16 final_addr = make16(h, l);
-			printf(" ($%04X + X)", final_addr);
-		}
-		*/
-		break;
-
 		default:
 			break;
 	}
 
 	printf("\n");
-
-		// printf(" %s\n", op->name);
-
-/*
-	switch(opcode) {
-		case 0x6B: // RORZ
-			bytes = 2;
-			printf("RORZ 0x%02X\n", ram[pc + 1]);
-			break;
-
-		case 0x6C: // ROR
-			bytes = 3;
-			printf("ROR 0x%02X%02X\n", ram[pc + 1], ram[pc + 2]);
-			break;
-
-		case 0x6E: // DBNZ
-			bytes = 3;
-			printf("DBNZ 0x%02X,0x%02X\n", ram[pc + 1], ram[pc + 2]);
-			break;
-
-		default:
-			printf("Unknown: %02X\n", opcode);
-	}
-*/
 
 	return(op->len);
 }
@@ -792,23 +651,6 @@ int main (int argc, char *argv[])
 	state.ram = spc_file->ram;
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
-
-	/*
-	dump_registers(state.regs);
-
-	byte = state.ram[state.regs->pc];
-
-	int x;
-	int inc = 0;
-	for (x = 0; x < 100; x++) {
-		inc += dump_instruction(state.regs->pc + inc, state.ram);
-	}
-	*/
-
-	//do_beq(&state, state.ram[state.regs->pc + 1]);
-	//dump_registers(state.regs);
-
-	// dump_instruction(state.regs->pc, state.ram);
 
 	while (! quit) {
 		if (state.regs->pc == break_addr) {
