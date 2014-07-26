@@ -27,7 +27,7 @@
 
 void usage(char *argv0)
 {
-	printf("Usage: %s <filename.spc>\n", argv0);
+	printf("Usage: %s <filename.spc> [<offset>]\n", argv0);
 }
 
 int main (int argc, char *argv[])
@@ -129,6 +129,7 @@ int main (int argc, char *argv[])
 			switch(opcode) {
 				case 0x2F:
 				case 0xD0:
+				case 0xF0: // BEQ
 					snprintf(str, sizeof(str), opcode_ptr->name, pos + (char) buf[1] + 2);
 					break;
 
