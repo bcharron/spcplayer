@@ -417,7 +417,7 @@ Uint16 do_sub_ya(spc_state_t *state, Uint16 val) {
 
 	state->regs->psw.f.c = !(result > 0xFFFF);
 	state->regs->psw.f.n = ((ret & 0x80) != 0);
-	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
+	state->regs->psw.f.v = (sResult < -32768 || sResult > 32767);
 	state->regs->psw.f.z = (ret == 0);
 
 	state->regs->y = get_high(ret);
@@ -426,6 +426,29 @@ Uint16 do_sub_ya(spc_state_t *state, Uint16 val) {
 	return(ret);
 }
 
+Uint16 do_add_ya(spc_state_t *state, Uint16 val) {
+	unsigned int result;
+	Uint16 ya;
+	Uint16 ret;
+	int sResult;
+
+	ya = make16(state->regs->y, state->regs->a);
+
+	result = ya + val;
+	printf("Result: %08x\n", result);
+	sResult = ya + val;
+	ret = (Uint16) (result & 0xFFFF);
+
+	state->regs->psw.f.c = (result > 0xFFFF);
+	state->regs->psw.f.n = ((ret & 0x80) != 0);
+	state->regs->psw.f.v = (sResult < -32768 || sResult > 32767);
+	state->regs->psw.f.z = (ret == 0);
+
+	state->regs->y = get_high(ret);
+	state->regs->a = get_low(ret);
+
+	return(ret);
+}
 
 /* Flag 'P' can change if $00 means $0000 or $0100 */
 Uint16 get_direct_page_addr(spc_state_t *state, Uint16 addr) {
@@ -497,6 +520,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x0E: //  TSET1 $xx
+			abs_addr = make16(operand2, operand1);
+			val = state->ram[abs_addr] - state->regs->a;
+			state->ram[abs_addr] |= state->regs->a;
+			adjust_flags(state, val);
+			cycles = 6;
+			break;
+
 		case 0x13: // BBC0 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 0, dp_addr, operand2);
@@ -544,10 +575,23 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x44: // EORZ A, $xx
+			val = get_direct_page_addr(state, operand1);
+			state->regs->a ^= val;
+			adjust_flags(state, state->regs->a);
+			cycles = 3;
+			break;
+
 		case 0x5C: // LSR A
 			state->regs->psw.f.c = state->regs->a & 0x01;
 			state->regs->a = state->regs->a >> 1;
 			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
+		case 0x5D: // MOV X, A
+			state->regs->x = state->regs->a;
+			adjust_flags(state, state->regs->x);
 			cycles = 2;
 			break;
 
@@ -561,11 +605,41 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x69: // CMP $xx, $yy
+		{
+			Uint8 val1;
+			Uint8 val2;
+
+			val1 = get_direct_page_byte(state, operand1);
+			val2 = get_direct_page_byte(state, operand2);
+
+			do_cmp(state, val2, val1);
+			cycles = 6;
+		}
+		break;
+
+		case 0x6D: // PUSH Y
+			do_push(state, state->regs->y);
+			cycles = 4;
+			break;
+
 		case 0x6F: // RET
 			do_ret(state);
 			cycles = 5;
 			pc_adjusted = 1;
 			break;
+
+		case 0x7A: // ADDW YA, $xx
+		{
+			Uint8 l = get_direct_page_byte(state, operand1);
+			Uint8 h = get_direct_page_byte(state, operand1 + 1);
+
+			Uint16 operand = make16(h, l);
+
+			do_add_ya(state, operand);
+			cycles = 5;
+		}
+		break;
 
 		case 0x75: // CMP A, $xxyy + X
 			abs_addr = make16(operand2, operand1);
@@ -590,6 +664,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->y = operand1;
 			adjust_flags(state, state->regs->y);
 			cycles = 2;
+			break;
+
+		case 0x8F: // MOV $dp, #$xx
+			dp_addr = get_direct_page_addr(state, operand2);
+			state->ram[dp_addr] = operand1;
+			cycles = 5;
 			break;
 
 		case 0x90: // BCC
@@ -633,9 +713,19 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xAD: // CMP Y,#$xx
+			do_cmp(state, state->regs->y, operand1);
+			cycles = 2;
+			break;
+
 		case 0xAE: // POP A
 			state->regs->a = do_pop(state);
 			cycles = 4;
+			break;
+
+		case 0xB0: // BCS $xx
+			cycles = branch_if_flag_set(state, state->regs->psw.f.c, operand1);
+			pc_adjusted = 1;
 			break;
 
 		case 0xB6: // SBC A, $xxxx + Y
@@ -659,6 +749,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			abs_addr = make16(operand2, operand1);
 			state->ram[abs_addr] = state->regs->a;
 			cycles = 5;
+			break;
+
+		case 0xCB: // MOV $xx, Y
+			dp_addr = get_direct_page_addr(state, operand1);
+			state->ram[dp_addr] = state->regs->y;
+			cycles = 4;
 			break;
 
 		case 0xCC: // MOV $xxxx, Y
@@ -717,6 +813,27 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0xDE: // CBNE $xx + X, $r
+			dp_addr = get_direct_page_addr(state, operand2);
+			dp_addr += state->regs->x;
+			val = state->ram[dp_addr];
+			do_cmp(state, state->regs->a, val);
+			branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
+			pc_adjusted = 1;
+			cycles += 2;
+			break;
+
+		case 0xE2: // SET7 $xx
+			dp_addr = get_direct_page_addr(state, operand1);
+			state->ram[dp_addr] |= 0x80;
+			cycles += 4;
+			break;
+
+		case 0xE3: // BBS7 $00xx, $yy
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 7, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
 
 		case 0xE4: // MOVZ A, $xx
 			val = get_direct_page_byte(state, operand1);
@@ -732,6 +849,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xE6: // MOV A, (X)
+			// XXX: Not sure if direct-page flag applies to this operation.
+			val = get_direct_page_byte(state, state->regs->x);
+			state->regs->a = val;
+			adjust_flags(state, state->regs->a);
+			cycles = 3;
+			break;
+
 		case 0xE8: // MOV A, #$xx
 			state->regs->a = operand1;
 			adjust_flags(state, state->regs->a);
@@ -745,6 +870,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0xED: // NOTC
+			state->regs->psw.f.c = ! state->regs->psw.f.c;
+			cycles = 3;
+			break;
+
 		case 0xF0: // BEQ
 			// cycles = do_beq(state, operand1);
 			cycles = branch_if_flag_set(state, state->regs->psw.f.z, operand1);
@@ -755,6 +885,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			dp_addr = get_direct_page_addr(state, operand1);
 			state->ram[dp_addr] &= (~ 0x80);
 			cycles = 4;
+			break;
+
+		case 0xF3: // BBC7 $dp, $r
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 7, dp_addr, operand2);
+			pc_adjusted = 1;
 			break;
 
 		case 0xF4: // MOVZ A, $xx + X
@@ -793,6 +929,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->y = state->regs->a;
 			adjust_flags(state, state->regs->y);
 			cycles = 2;
+			break;
+
+		case 0xFE: // DBNZ Y, $xx
+			state->regs->y--;
+			adjust_flags(state, state->regs->y);
+			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
+			pc_adjusted = 1;
 			break;
 
 		default:
@@ -893,6 +1036,12 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 	switch(opcode) {
 		case 0x13: // BBC0
 		case 0x33: // BBC1
+		case 0x53: // BBC2
+		case 0x73: // BBC3
+		case 0x93: // BBC4
+		case 0xB3: // BBC5
+		case 0xD3: // BBC6
+		case 0xF3: // BBC7
 		{
 			printf(" ($%04X)", pc + 3 + (Sint8) ram[pc + 2]);
 		}
@@ -906,7 +1055,9 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		case 0x90: // BCC
 		case 0xB0: // BCS
 		case 0xD0: // BNE
+		case 0xDE: // CBNE
 		case 0xF0: // BEQ
+		case 0xFE: // DBNZ
 		{
 			// +2 because the operands have been read when the CPU gets ready to jump
 			printf(" ($%04X)", pc + (Sint8) ram[pc + 1] + 2);

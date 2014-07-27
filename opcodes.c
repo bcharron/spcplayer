@@ -214,7 +214,7 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "SBC $%02X,#$%02X", 0xB8, 3 },
 	{ "SBC $%02X,$%02X", 0xA9, 3 },
 	{ "TCALL $%02X <-- fucked", 0x01, 1 },
-	{ "TSET1 $%02X", 0x0E, 3 },
+	{ "TSET1 $%02X%02X", 0x0E, 3 },
 	{ "TCLR1 $%02X", 0x4E, 3 },
 	{ "CALL $%02X%02X", 0x3F, 3 },
 	{ "PCALL $%02X", 0x4F, 2 },
