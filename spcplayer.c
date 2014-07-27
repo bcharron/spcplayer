@@ -121,6 +121,8 @@ spc_file_t *read_spc_file(char *filename);
 Uint16 get_direct_page_addr(spc_state_t *state, Uint16 addr);
 Uint8 get_direct_page_byte(spc_state_t *state, Uint16 addr);
 void adjust_flags(spc_state_t *state, Uint16 val);
+Uint8 read_byte(spc_state_t *state, Uint16 addr);
+Uint16 read_word(spc_state_t *state, Uint16 addr);
 
 char *flags_str(spc_flags_t flags)
 {
@@ -180,6 +182,25 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	}
 
 	assert(ret != NULL);
+
+	return(ret);
+}
+
+/* Read a byte from memory / registers / whatever */
+Uint8 read_byte(spc_state_t *state, Uint16 addr) {
+	return(state->ram[addr]);
+}
+
+/* Read a word (16-bit) from memory / registers / whatever */
+Uint16 read_word(spc_state_t *state, Uint16 addr) {
+	Uint16 ret;
+	Uint8 l;
+	Uint8 h;
+
+	l = state->ram[addr];
+	h = state->ram[addr + 1];
+
+	ret = make16(h, l);
 
 	return(ret);
 }
