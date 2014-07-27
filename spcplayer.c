@@ -751,6 +751,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0xF2: // CLR7 $11
+			dp_addr = get_direct_page_addr(state, operand1);
+			state->ram[dp_addr] &= (~ 0x80);
+			cycles = 4;
+			break;
+
 		case 0xF4: // MOVZ A, $xx + X
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
