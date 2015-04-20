@@ -34,7 +34,7 @@
 #include <sys/time.h>
 #include <errno.h>
 #include <arpa/inet.h>
-#include <SDL/SDL.h>
+#include <SDL.h>
 
 #include "opcodes.h"
 
@@ -145,6 +145,12 @@ char *flags_str(spc_flags_t flags)
 	return(buf);
 }
 
+/* Convert from 16-bit little-endian */
+// XXX: IMPLEMENT ME
+uint16_t le16toh(uint16_t i) {
+	return(i);
+}
+
 /* Make a 16-bit value out of two 8-bit ones */
 uint16_t make16(uint8_t high, uint8_t low) {
 	uint16_t offset = ((uint16_t) high << 8) | low;
@@ -186,9 +192,72 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(ret);
 }
 
+Uint8 register_read(spc_state_t *state, Uint16 addr) {
+	Uint8 val;
+
+	// printf("Register read $%04X\n", addr);
+
+	switch(addr) {
+		case 0xF0:	// Test?
+			val = state->ram[addr];
+			break;
+
+		case 0xF1:	// Control
+			val = state->ram[addr];
+			break;
+
+		case 0xF2:	// Register stuff: Add
+			val = state->ram[addr];
+			break;
+
+		case 0xF3:	// Register stuff: Data
+			val = state->ram[addr];
+			break;
+
+		case 0xF4:	// I/O Ports
+		case 0xF5:
+		case 0xF6:
+		case 0xF7:
+			val = state->ram[addr];
+			break;
+
+		case 0xF8:	// Unknown
+		case 0xF9:
+			val = state->ram[addr];
+			break;
+
+		case 0xFA:	// Timers
+		case 0xFB:
+		case 0xFC:
+			val = state->ram[addr];
+			break;
+
+		case 0xFD:	// Counters
+		case 0xFE:
+		case 0xFF:
+			val = state->ram[addr];
+			break;
+
+		default:
+			val = state->ram[addr];
+			break;
+	}
+
+	return(val);
+}
+
 /* Read a byte from memory / registers / whatever */
 Uint8 read_byte(spc_state_t *state, Uint16 addr) {
-	return(state->ram[addr]);
+	Uint8 val;
+
+	// Handle registers 0xF0-0xFF
+	if ((addr & 0xFFF0) == 0x00F0) {
+		// XXX: Handle register here.
+		val = register_read(state, addr);
+	} else
+		val = state->ram[addr];
+
+	return(val);
 }
 
 /* Read a word (16-bit) from memory / registers / whatever */
@@ -197,8 +266,8 @@ Uint16 read_word(spc_state_t *state, Uint16 addr) {
 	Uint8 l;
 	Uint8 h;
 
-	l = state->ram[addr];
-	h = state->ram[addr + 1];
+	l = read_byte(state, addr);
+	h = read_byte(state, addr + 1);
 
 	ret = make16(h, l);
 
@@ -488,7 +557,7 @@ Uint8 get_direct_page_byte(spc_state_t *state, Uint16 addr) {
 	Uint8 ret;
 
 	Uint16 real_addr = get_direct_page_addr(state, addr);
-	ret = state->ram[real_addr];
+	ret = read_byte(state, real_addr);
 
 	return(ret);
 }
@@ -520,6 +589,10 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 	opcode_ptr = get_opcode_by_value(opcode);
 
 	switch(opcode) {
+		case 0x00: // NOP
+			cycles = 1;
+			break;
+
 		case 0x03: // BBS0 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbs(state, 0, dp_addr, operand2);
@@ -666,7 +739,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->x;
 
-			do_cmp(state, state->regs->a, state->ram[abs_addr]);
+			do_cmp(state, state->regs->a, read_byte(state, abs_addr));
 			cycles = 5;
 			break;
 
@@ -703,7 +776,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->y;
 
-			val = state->ram[abs_addr];
+			val = read_byte(state, abs_addr);
 			
 			state->regs->a = do_adc(state, state->regs->a, val);
 			cycles = 5;
@@ -753,7 +826,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->y;
 
-			val = state->ram[abs_addr];
+			val = read_byte(state, abs_addr);
 			
 			state->regs->a = do_sbc(state, state->regs->a, val);
 			// state->regs->a = state->regs->a - val - state->regs->psw.f.c;
@@ -837,7 +910,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xDE: // CBNE $xx + X, $r
 			dp_addr = get_direct_page_addr(state, operand2);
 			dp_addr += state->regs->x;
-			val = state->ram[dp_addr];
+			val = read_byte(state, dp_addr);
 			do_cmp(state, state->regs->a, val);
 			branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
 			pc_adjusted = 1;
@@ -865,7 +938,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xE5: // MOV A, $xxxx
 			abs_addr = make16(operand2, operand1);
-			state->regs->a = state->ram[abs_addr];
+			state->regs->a = read_byte(state, abs_addr);
 			adjust_flags(state, state->regs->a);
 			cycles = 4;
 			break;
@@ -890,6 +963,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			adjust_flags(state, state->regs->y);
 			cycles = 3;
 			break;
+
+		case 0xEC: // MOV Y, $xxxx
+			abs_addr = make16(operand2, operand1);
+			state->regs->y = read_byte(state, abs_addr);
+			adjust_flags(state, state->regs->y);
+			cycles = 4;
 
 		case 0xED: // NOTC
 			state->regs->psw.f.c = ! state->regs->psw.f.c;
@@ -917,7 +996,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xF4: // MOVZ A, $xx + X
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
-			state->regs->a = state->ram[dp_addr];
+			state->regs->a = read_byte(state, dp_addr);
 			adjust_flags(state, state->regs->a);
 			cycles = 4;
 			break;
@@ -925,7 +1004,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xF5: // MOV A, $xxxx + X
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->x;
-			state->regs->a = state->ram[abs_addr];
+			state->regs->a = read_byte(state, abs_addr);
 			adjust_flags(state, state->regs->a);
 			cycles = 5;
 			break;
@@ -933,7 +1012,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xF6: // MOV A, $xxxx + Y
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->y;
-			state->regs->a = state->ram[abs_addr];
+			state->regs->a = read_byte(state, abs_addr);
 			adjust_flags(state, state->regs->a);
 			cycles = 5;
 			break;
@@ -941,7 +1020,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xFB: // MOVZ Y, $xx + X
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
-			state->regs->y = state->ram[dp_addr];
+			state->regs->y = read_byte(state, dp_addr);
 			adjust_flags(state, state->regs->y);
 			cycles = 4;
 			break;
@@ -1125,7 +1204,7 @@ spc_file_t *read_spc_file(char *filename)
 	}
 
 	memcpy(spc->header, buf, SPC_HEADER_LEN);
-	spc->header[SPC_HEADER_LEN + 1] = '\0';
+	spc->header[SPC_HEADER_LEN] = '\0';
 
 	printf("Header: [%s]\n", spc->header);
 
@@ -1230,7 +1309,7 @@ void dump_mem_line(spc_state_t *state, Uint16 addr) {
 	printf("$%04X", addr);
 
 	for (x = 0; x < 16; x++) {
-		printf(" %02X ", state->ram[addr + x]);
+		printf(" %02X ", read_byte(state, addr + x));
 	}
 
 	printf("\n");
@@ -1356,6 +1435,7 @@ int main (int argc, char *argv[])
 					dump_registers(state.regs);
 					break;
 
+				case '\n':
 				case 'n':
 					execute_next(&state);
 					break;

@@ -1,5 +1,5 @@
-CFLAGS=-Wall -ggdb
-LDFLAGS=-lSDL
+CFLAGS=-Wall -ggdb `sdl2-config --cflags`
+LDFLAGS=`sdl2-config --libs`
 
 # For OSX
 #LDFLAGS=`/opt/local/bin/sdl-config --libs`
