@@ -58,6 +58,21 @@
 
 #define NO_OPERAND 0
 
+#define SPC_REG_CONTROL 0xF1
+#define SPC_REG_TIMER0 0xFA
+#define SPC_REG_TIMER1 0xFB
+#define SPC_REG_TIMER2 0xFC
+
+#define SPC_REG_COUNTER0 0xFD
+#define SPC_REG_COUNTER1 0xFE
+#define SPC_REG_COUNTER2 0xFF
+
+// How many cycles before a timer's internal counter is incremented, based on
+// 2.048 MHz clock
+#define SPC_TIMER_CYCLES_8KHZ 250
+#define SPC_TIMER_CYCLES_64KHZ 31
+
+
 /* Passed to functions that may or not update flags */
 #define DONT_ADJUST_FLAGS 0
 #define ADJUST_FLAGS 1
@@ -86,6 +101,11 @@ typedef struct spc_registers_s {
 	Uint8 reserved[2];
 } spc_registers_t;
 
+typedef struct spc_timers_s {
+	unsigned long next_timer[3];	// Next cycle number for this timer to increase
+	Uint8 counter[3];		// Increments by one every time next_timer == cycle
+} spc_timers_t;
+
 typedef struct id_tag_s {
 	char song_title[32 + 1];
 	char game_title[32 + 1];
@@ -109,9 +129,10 @@ typedef struct spc_file_s {
 
 typedef struct spc_state_s {
 	spc_registers_t *regs;
+	spc_timers_t timers;
 	Uint8 *ram;
 	Uint8 *dsp_registers;
-	long cycle;
+	unsigned long cycle;
 } spc_state_t;
 
 int dump_instruction(Uint16 pc, Uint8 *ram);
@@ -123,6 +144,9 @@ Uint8 get_direct_page_byte(spc_state_t *state, Uint16 addr);
 void adjust_flags(spc_state_t *state, Uint16 val);
 Uint8 read_byte(spc_state_t *state, Uint16 addr);
 Uint16 read_word(spc_state_t *state, Uint16 addr);
+void write_byte(spc_state_t *state, Uint16 addr, Uint8 val);
+void write_word(spc_state_t *state, Uint16 addr, Uint16 val);
+void set_timer(spc_state_t *state, int timer, Uint8 value);
 
 char *flags_str(spc_flags_t flags)
 {
@@ -192,6 +216,69 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(ret);
 }
 
+void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
+	// printf("Register write $#%02X into $%04X\n", val, addr);
+
+	switch(addr) {
+		case 0xF0:	// Test?
+			state->ram[addr] = val;
+			break;
+
+		case 0xF1:	// Control
+			state->ram[addr] = val;
+
+			// Start or stop a timer
+			for (int timer = 0; timer < 3; timer++) {
+				int bit = 0x01 << timer;
+
+				// XXX: Handle the case where timer == 0x00, which is in fact 256.
+				if (val & bit)
+					set_timer(state, timer, val);
+			}
+
+			// XXX: Handles bits 4-5 (PORT0-3)
+			// XXX: Bit 7 appears to be related to the IPL ROM being ROM or RAM.
+			break;
+
+		case 0xF2:	// Register stuff: Add
+			state->ram[addr] = val;
+			break;
+
+		case 0xF3:	// Register stuff: Data
+			state->ram[addr] = val;
+			break;
+
+		case 0xF4:	// I/O Ports
+		case 0xF5:
+		case 0xF6:
+		case 0xF7:
+			state->ram[addr] = val;
+			break;
+
+		case 0xF8:	// Unknown
+		case 0xF9:
+			state->ram[addr] = val;
+			break;
+
+		case 0xFA:	// Timers
+		case 0xFB:
+		case 0xFC:
+			state->ram[addr] = val;
+			break;
+
+		case 0xFD:	// Counters
+		case 0xFE:
+		case 0xFF:
+			state->ram[addr] = val;
+			break;
+
+		default:
+			fprintf(stderr, "register_write(%04X): HOW THE FUCK DID THIS HAPPEN??\n", addr);
+			exit(1);
+			break;
+	}
+}
+
 Uint8 register_read(spc_state_t *state, Uint16 addr) {
 	Uint8 val;
 
@@ -236,6 +323,7 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 		case 0xFE:
 		case 0xFF:
 			val = state->ram[addr];
+			state->ram[addr] = 0;
 			break;
 
 		default:
@@ -244,6 +332,24 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 	}
 
 	return(val);
+}
+
+void write_byte(spc_state_t *state, Uint16 addr, Uint8 val) {
+	// Handle registers 0xF0-0xFF
+	if ((addr & 0xFFF0) == 0x00F0) {
+		// XXX: Handle register here.
+		register_write(state, addr, val);
+	} else
+		state->ram[addr] = val;
+}
+
+void write_word(spc_state_t *state, Uint16 addr, Uint16 val) {
+	// XXX: Don't know what the proper order is.
+	Uint8 l = get_low(val);
+	Uint8 h = get_high(val);
+
+	write_byte(state, addr, l);
+	write_byte(state, addr + 1, h);
 }
 
 /* Read a byte from memory / registers / whatever */
@@ -568,6 +674,42 @@ void adjust_flags(spc_state_t *state, Uint16 val) {
 	state->regs->psw.f.z = (val == 0);
 }
 
+int TIMER_CYCLES[3] = { SPC_TIMER_CYCLES_8KHZ, SPC_TIMER_CYCLES_8KHZ, SPC_TIMER_CYCLES_64KHZ };
+
+/* Go through Timers 0-2. If enough cycles have elapsed, the counter 'ticks' */
+void update_counters(spc_state_t *state) {
+	// 2.048 MHz / 8kHz = 250
+	// 2.048 MHz / 64kHz = 31
+
+	// XXX: Most likely want a single "next_counter" (min of all next_timer
+	// counters) to avoid going through all this every single tick.
+	for (int timer = 0; timer < 3; timer++) {
+		int bit = 0x01 << timer;
+
+		if ((state->ram[SPC_REG_CONTROL] & bit) && (state->cycle >= state->timers.next_timer[timer])) {
+			state->timers.next_timer[timer] = state->cycle + TIMER_CYCLES[timer];
+
+			state->timers.counter[timer]++;
+
+			// XXX: I *think* this should correctly handle the case where the desired timer = 0x00
+			if (state->timers.counter[timer] == state->ram[SPC_REG_TIMER0 + timer]) {
+				// Only the bottom 4 bits of the counter are available.
+				state->ram[SPC_REG_COUNTER0 + timer] = (state->ram[SPC_REG_COUNTER0 + timer] + 1) % 16;
+
+				// Internal counter resets when the timer hits.
+				state->timers.counter[timer] = 0;
+
+				printf("TIMER %d HIT: %d\n", timer, state->ram[SPC_REG_COUNTER0 + timer]);
+			}
+		}
+	}
+}
+
+void set_timer(spc_state_t *state, int timer, Uint8 value) {
+	state->timers.next_timer[timer] = state->cycle + TIMER_CYCLES[timer];
+	state->timers.counter[timer] = 0;	// Internal counter, increased every clock
+}
+
 int execute_instruction(spc_state_t *state, Uint16 addr) {
 	Uint16 dp_addr;
 	Uint16 abs_addr;
@@ -762,7 +904,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x8F: // MOV $dp, #$xx
 			dp_addr = get_direct_page_addr(state, operand2);
-			state->ram[dp_addr] = operand1;
+			write_byte(state, dp_addr, operand1);
 			cycles = 5;
 			break;
 
@@ -835,25 +977,25 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xC4: // MOVZ $xx, A
 			dp_addr = get_direct_page_addr(state, operand1);
-			state->ram[dp_addr] = state->regs->a;
+			write_byte(state, dp_addr, state->regs->a);
 			cycles = 4;
 			break;
 
 		case 0xC5: // MOV $xxxx, A
 			abs_addr = make16(operand2, operand1);
-			state->ram[abs_addr] = state->regs->a;
+			write_byte(state, abs_addr, state->regs->a);
 			cycles = 5;
 			break;
 
 		case 0xCB: // MOV $xx, Y
 			dp_addr = get_direct_page_addr(state, operand1);
-			state->ram[dp_addr] = state->regs->y;
+			write_byte(state, dp_addr, state->regs->y);
 			cycles = 4;
 			break;
 
 		case 0xCC: // MOV $xxxx, Y
 			abs_addr = make16(operand2, operand1);
-			state->ram[abs_addr] = state->regs->y;
+			write_byte(state, abs_addr, state->regs->y);
 			cycles = 5;
 			break;
 
@@ -883,21 +1025,22 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xD4: // MOVZ $xx + X, A
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
-			state->ram[dp_addr] = state->regs->a;
+			write_byte(state, dp_addr, state->regs->a);
 			cycles = 5;
 			break;
 
 		case 0xD5: // MOV $xxxx + X, A
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->x;
-			state->ram[abs_addr] = state->regs->a;
+			write_byte(state, abs_addr, state->regs->a);
 			cycles = 6;
 			break;
 
 		case 0xDA: // MOVW $xx, YA
 			dp_addr = get_direct_page_addr(state, operand1);
-			state->ram[dp_addr + 1] = state->regs->y;
-			state->ram[dp_addr] = state->regs->a;	// XXX: Is it the other way around?
+			// XXX: Not sure what the order is!! Maybe A gets written first??
+			write_byte(state, dp_addr + 1, state->regs->y);
+			write_byte(state, dp_addr, state->regs->a);
 			cycles = 4;	// XXX: One source says 4, another 5..
 			break;
 
@@ -1362,6 +1505,11 @@ int main (int argc, char *argv[])
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
 
+	/* Initialize timers. Assume they are enabled */
+	set_timer(&state, 0, state.ram[SPC_REG_COUNTER0]);
+	set_timer(&state, 1, state.ram[SPC_REG_COUNTER1]);
+	set_timer(&state, 2, state.ram[SPC_REG_COUNTER2]);
+
 	printf("PC: $%04X\n", state.regs->pc);
 
 	while (! quit) {
@@ -1466,6 +1614,7 @@ int main (int argc, char *argv[])
 			dump_registers(state.regs);
 			dump_instruction(state.regs->pc, state.ram);
 			execute_next(&state);
+			update_counters(&state);
 		}
 	}
 
