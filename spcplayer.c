@@ -1225,7 +1225,7 @@ int execute_next(spc_state_t *state) {
 
 void dump_registers(spc_registers_t *registers)
 {
-	printf("== Registers==\n");
+	printf("== Registers ==\n");
 	printf("PC : %u (0x%04X)\n", registers->pc, registers->pc);
 	printf("A  : %u (0x%02X)\n", registers->a, registers->a);
 	printf("X  : %u (0x%02X)\n", registers->x, registers->x);
@@ -1487,6 +1487,8 @@ void dump_dsp(spc_state_t *state) {
 	int voice;
 	Uint8 *dsp = state->dsp_registers;
 
+	printf("== DSP Registers ==\n");
+
 	for (i = 0; i < 127; i++) {
 		voice = (i & 0xF0) >> 4;
 
@@ -1685,6 +1687,7 @@ int main (int argc, char *argv[])
 	int quit = 0;
 	int do_break = 1;
 	int break_addr = -1;
+	int trace = 0;
 
 	if (argc != 2) {
 		usage(argv[0]);
@@ -1717,7 +1720,7 @@ int main (int argc, char *argv[])
 
 		// Should we break after every instruction?
 		if (do_break) {
-			dump_registers(state.regs);
+			// dump_registers(state.regs);
 			dump_instruction(state.regs->pc, state.ram);
 
 			printf("> ");
@@ -1809,6 +1812,13 @@ int main (int argc, char *argv[])
 				}
 				break;
 
+				case 't':
+				{
+					trace = ! trace;
+					printf("Tracing is now %s.\n", trace ? "enabled" : "disabld");
+				}
+				break;
+
 				case 'x':
 				{
 					char *ptr = strchr(input, ' ');
@@ -1828,7 +1838,9 @@ int main (int argc, char *argv[])
 			}
 		} else {
 			// dump_registers(state.regs);
-			dump_instruction(state.regs->pc, state.ram);
+			if (trace)
+				dump_instruction(state.regs->pc, state.ram);
+
 			execute_next(&state);
 			update_counters(&state);
 		}
