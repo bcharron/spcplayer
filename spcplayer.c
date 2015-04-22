@@ -132,6 +132,7 @@ typedef struct spc_state_s {
 	spc_timers_t timers;
 	Uint8 *ram;
 	Uint8 *dsp_registers;
+	Uint8 current_dsp_register;
 	unsigned long cycle;
 } spc_state_t;
 
@@ -216,15 +217,22 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(ret);
 }
 
+/* Called when a register is being written to */
+void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
+	// XXX: Do something here :)
+	state->dsp_registers[reg] = val;
+}
+
+/* Handles a byte being written to $00F0-$00FF (registers) */
 void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
-	// printf("Register write $#%02X into $%04X\n", val, addr);
+	printf("Register write $#%02X into $%04X\n", val, addr);
 
 	switch(addr) {
 		case 0xF0:	// Test?
 			state->ram[addr] = val;
 			break;
 
-		case 0xF1:	// Control
+		case 0xF1:	// Control, AKA SPCCON1
 			state->ram[addr] = val;
 
 			// Start or stop a timer
@@ -240,11 +248,18 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 			// XXX: Bit 7 appears to be related to the IPL ROM being ROM or RAM.
 			break;
 
-		case 0xF2:	// Register stuff: Add
+		case 0xF2:	// Register stuff: Address, AKA SPCDRGA
+			state->current_dsp_register = val;
+			if (val > 127) {
+				fprintf(stderr, "Trying to access DSP register %d, but maximum is 127.\n", val);
+				state->current_dsp_register = val % 127;
+			}
+
 			state->ram[addr] = val;
 			break;
 
-		case 0xF3:	// Register stuff: Data
+		case 0xF3:	// Register stuff: Data, AKA SPCDDAT
+			dsp_register_write(state, state->current_dsp_register, val);
 			state->ram[addr] = val;
 			break;
 
@@ -260,13 +275,13 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 			state->ram[addr] = val;
 			break;
 
-		case 0xFA:	// Timers
+		case 0xFA:	// Timers, AKA SPCTMLT
 		case 0xFB:
 		case 0xFC:
 			state->ram[addr] = val;
 			break;
 
-		case 0xFD:	// Counters
+		case 0xFD:	// Counters, AKA SPCTMCT
 		case 0xFE:
 		case 0xFF:
 			state->ram[addr] = val;
@@ -298,7 +313,8 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0xF3:	// Register stuff: Data
-			val = state->ram[addr];
+			// val = state->ram[addr];
+			val = state->dsp_registers[state->current_dsp_register];
 			break;
 
 		case 0xF4:	// I/O Ports
@@ -334,6 +350,7 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 	return(val);
 }
 
+/* Write a byte to memory / registers */
 void write_byte(spc_state_t *state, Uint16 addr, Uint8 val) {
 	// Handle registers 0xF0-0xFF
 	if ((addr & 0xFFF0) == 0x00F0) {
@@ -386,7 +403,7 @@ int branch_if_flag(spc_state_t *state, int flag, Uint8 operand1) {
 
 	if (flag) {
 		state->regs->pc += (Sint8) operand1 + 2;
-		printf("Jumping to 0x%04X\n", state->regs->pc);
+		// printf("Jumping to 0x%04X\n", state->regs->pc);
 		cycles = 6;
 	} else {
 		state->regs->pc += 2;
@@ -457,7 +474,7 @@ int do_bbc(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 		state->regs->pc += 3;
 	} else {
 		state->regs->pc += (Sint8) rel + 3;
-		printf("Jumping to 0x%04X\n", state->regs->pc);
+		// printf("Jumping to 0x%04X\n", state->regs->pc);
 		cycles = 7;
 	}
 
@@ -473,7 +490,7 @@ int do_bbs(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 
 	if (state->ram[src_addr] & test) {
 		state->regs->pc += (Sint8) rel + 3;
-		printf("Jumping to 0x%04X\n", state->regs->pc);
+		// printf("Jumping to 0x%04X\n", state->regs->pc);
 		cycles = 7;
 	} else {
 		state->regs->pc += 3;
@@ -522,10 +539,10 @@ void do_ret(spc_state_t *state) {
 
 	ret_addr = make16(h, l);
 
-	printf("Popped address %04X\n", ret_addr);
+	// printf("Popped address %04X\n", ret_addr);
 
 	state->regs->pc = ret_addr;
-	printf("Jumping to $%04X\n", state->regs->pc);
+	// printf("Jumping to $%04X\n", state->regs->pc);
 }
 
 void do_call(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
@@ -542,7 +559,7 @@ void do_call(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
 	dest_addr = make16(operand2, operand1);
 	state->regs->pc = dest_addr;
 
-	printf("Jumping to $%04X\n", state->regs->pc);
+	// printf("Jumping to $%04X\n", state->regs->pc);
 }
 
 /* Update the flags based on (operand1 - operand2) */
@@ -1465,6 +1482,184 @@ void dump_mem(spc_state_t *state, Uint16 addr) {
 		dump_mem_line(state, addr + i * 16);
 }
 
+void dump_dsp(spc_state_t *state) {
+	int i;
+	int voice;
+	Uint8 *dsp = state->dsp_registers;
+
+	for (i = 0; i < 127; i++) {
+		voice = (i & 0xF0) >> 4;
+
+		printf("DSP[$%02X] ", i);
+
+		switch(i) {
+			case 0x00:
+			case 0x10:
+			case 0x20:
+			case 0x30:
+			case 0x40:
+			case 0x50:
+			case 0x60:
+			case 0x70:
+				printf("Voice %d ($%02X): Vol (L): %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x01:
+			case 0x11:
+			case 0x21:
+			case 0x31:
+			case 0x41:
+			case 0x51:
+			case 0x61:
+			case 0x71:
+				printf("Voice %d ($%02X): Vol (R): %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x02:
+			case 0x12:
+			case 0x22:
+			case 0x32:
+			case 0x42:
+			case 0x52:
+			case 0x62:
+			case 0x72:
+				printf("Voice %d ($%02X): Pitch (L): %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x03:
+			case 0x13:
+			case 0x23:
+			case 0x33:
+			case 0x43:
+			case 0x53:
+			case 0x63:
+			case 0x73:
+				printf("Voice %d ($%02X): Pitch (H): %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x04:
+			case 0x14:
+			case 0x24:
+			case 0x34:
+			case 0x44:
+			case 0x54:
+			case 0x64:
+			case 0x74:
+				printf("Voice %d ($%02X): SRCN: %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x05:
+			case 0x15:
+			case 0x25:
+			case 0x35:
+			case 0x45:
+			case 0x55:
+			case 0x65:
+			case 0x75:
+				printf("Voice %d ($%02X): ADSR(1): %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x06:
+			case 0x16:
+			case 0x26:
+			case 0x36:
+			case 0x46:
+			case 0x56:
+			case 0x66:
+			case 0x76:
+				printf("Voice %d ($%02X): ADSR(2): %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x07:
+			case 0x17:
+			case 0x27:
+			case 0x37:
+			case 0x47:
+			case 0x57:
+			case 0x67:
+			case 0x77:
+				printf("Voice %d ($%02X): GAIN: %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x0F:
+			case 0x1F:
+			case 0x2F:
+			case 0x3F:
+			case 0x4F:
+			case 0x5F:
+			case 0x6F:
+			case 0x7F:
+				// XXX: Whether or not it's a voice depends on the source. May or not be per-voice?
+				printf("Voice %d ($%02X): FILTER: %u\n", voice, i, dsp[i]);
+				break;
+
+			case 0x08:
+				printf("*ENVX: %u\n", dsp[i]);
+				break;
+
+			case 0x09:
+				printf("*VALX: %u\n", dsp[i]);
+				break;
+
+			case 0x0C:
+				printf("MASTVOLL: %u\n", dsp[i]);
+				break;
+
+			case 0x0D:
+				printf("ECHO: %u\n", dsp[i]);
+				break;
+
+			case 0x1C:
+				printf("MASTVOLR: %u\n", dsp[i]);
+				break;
+
+			case 0x2C:
+				printf("ECHOVOL (L): %u\n", dsp[i]);
+				break;
+
+			case 0x2D:
+				printf("PMON: %u\n", dsp[i]);
+				break;
+
+			case 0x3C:
+				printf("ECHOVOL (R): %u\n", dsp[i]);
+				break;
+
+			case 0x3D:
+				printf("NOV: $#%02X\n", dsp[i]);
+				break;
+
+			case 0x4C:
+				printf("KON: $#%02X\n", dsp[i]);
+				break;
+
+			case 0x4D:
+				printf("EOV: $#%02X\n", dsp[i]);
+				break;
+
+			case 0x5C:
+				printf("KOFF: $#%02X\n", dsp[i]);
+				break;
+
+			case 0x5D:
+				printf("SAMLOC: $#%02X\n", dsp[i]);
+				break;
+
+			case 0x6C:
+				printf("FLG: $#%02X\n", dsp[i]);
+				break;
+
+			case 0x7C:
+				printf("*ENDX: $#%02X\n", dsp[i]);
+				break;
+
+			default:
+				printf("\n");
+				break;
+		}
+	}
+}
+
 void usage(char *argv0)
 {
 	printf("Usage: %s <filename.spc>\n", argv0);
@@ -1475,9 +1670,11 @@ void show_menu(void) {
 	printf("c          Continue execution\n");
 	printf("d [<addr>] Disassemble at $<addr>, or $pc if addr is not supplied (ie, \"d abcd\")\n");
 	printf("h          Shows this help\n");
-	printf("i          Show registers\n");
 	printf("n          Execute next instruction\n");
+	printf("sd         Show DSP Registers\n");
+	printf("sr         Show CPU Registers\n");
 	printf("x <mem>    Examine memory at $<mem> (ie, \"x abcd\")\n");
+	printf("<Enter>    Execute next instruction\n");
 }
 
 int main (int argc, char *argv[])
@@ -1579,10 +1776,6 @@ int main (int argc, char *argv[])
 					show_menu();
 					break;
 
-				case 'i':
-					dump_registers(state.regs);
-					break;
-
 				case '\n':
 				case 'n':
 					execute_next(&state);
@@ -1591,6 +1784,30 @@ int main (int argc, char *argv[])
 				case 'q':
 					quit = 1;
 					break;
+
+				case 's':
+				{
+					if (strlen(input) < 3) {
+						fprintf(stderr, "Unknown command\n");
+						show_menu();
+					} else {
+						switch (input[1]) {
+							case 'd':
+								dump_dsp(&state);
+								break;
+
+							case 'r':
+								dump_registers(state.regs);
+								break;
+
+							default:
+								fprintf(stderr, "Unknown command\n");
+								show_menu();
+								break;
+						}
+					}
+				}
+				break;
 
 				case 'x':
 				{
@@ -1607,11 +1824,10 @@ int main (int argc, char *argv[])
 
 				default:
 					fprintf(stderr, "Unknown command, %c\n", input[0]);
-
+					break;
 			}
-
 		} else {
-			dump_registers(state.regs);
+			// dump_registers(state.regs);
 			dump_instruction(state.regs->pc, state.ram);
 			execute_next(&state);
 			update_counters(&state);
