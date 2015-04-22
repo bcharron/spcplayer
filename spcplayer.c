@@ -91,6 +91,17 @@ typedef union spc_flags_u {
 	Uint8 val;
 } spc_flags_t;
 
+typedef struct brr_header_s {
+	int granularity : 4;
+	int filter : 2;
+	int loop_flag : 1;
+	int last_chunk : 1;
+} brr_header_t;
+
+typedef struct brr_block_s {
+	Sint16 samples[16];
+} brr_block_t;
+
 typedef struct spc_registers_s {
 	Uint16 pc;
 	Uint8 a;
@@ -219,6 +230,7 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 
 /* Called when a register is being written to */
 void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
+	printf("[DSP] Writing %02X into register %02X\n", val, reg);
 	// XXX: Do something here :)
 	state->dsp_registers[reg] = val;
 }
@@ -571,6 +583,8 @@ void do_cmp(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
 	result = operand1 - operand2;
 	sResult = (Sint8) operand1 - (Sint8) operand2;
 	state->regs->psw.f.c = !(result > 0xFF);
+
+	// XXX: According to spc700.txt, the V flag is not updated by CMP.
 	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
 
 	temp_result = result & 0x00FF;
@@ -794,6 +808,15 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x1E: // CMP X, $xxyy
+		{
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			do_cmp(state, state->regs->x, val);
+			cycles = 4;
+		}
+		break;
+
 		case 0x24: // ANDZ A, $xx
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a &= val;
@@ -822,6 +845,15 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x3E: // CMP X, $xx
+		{
+			Uint8 val1 = get_direct_page_byte(state, operand1);
+
+			do_cmp(state, state->regs->x, val1);
+			cycles = 6;
+		}
+		break;
+
 		case 0x3F: // CALL $xxyy
 			do_call(state, operand1, operand2);
 			cycles = 8;
@@ -848,10 +880,28 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x5F: // JMP $xxxx
+		{
+			Uint16 operand = make16(operand2, operand1);
+			state->regs->pc = operand;
+			pc_adjusted = 1;
+			cycles = 3;
+		}
+		break;
+
 		case 0x60: // CLRC
 			state->regs->psw.f.c = 0;
 			cycles = 2;
 			break;
+
+		case 0x65: // CMP A, $xxyy
+		{
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			do_cmp(state, state->regs->a, val);
+			cycles = 4;
+		}
+		break;
 		
 		case 0x68: //  CMP A, #$xx
 			do_cmp(state, state->regs->a, operand1);
@@ -1053,6 +1103,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 6;
 			break;
 
+		case 0xD8: // MOV $xx, X
+			dp_addr = get_direct_page_addr(state, operand1);
+			write_byte(state, dp_addr, state->regs->x);
+			cycles = 4;
+			break;
+
 		case 0xDA: // MOVW $xx, YA
 			dp_addr = get_direct_page_addr(state, operand1);
 			// XXX: Not sure what the order is!! Maybe A gets written first??
@@ -1115,6 +1171,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->a = operand1;
 			adjust_flags(state, state->regs->a);
 			cycles = 2;
+			break;
+
+		case 0xE9: // MOV X, $xxxx
+			abs_addr = make16(operand2, operand1);
+			state->regs->x = read_byte(state, abs_addr);
+			adjust_flags(state, state->regs->x);
+			cycles = 4;
 			break;
 
 		case 0xEB: // MOV Y, $xx
@@ -1463,6 +1526,50 @@ spc_file_t *read_spc_file(char *filename)
 	return(spc);
 }
 
+brr_block_t *decode_brr_block(Uint8 *addr) {
+	Uint8 range;
+	Uint8 filter;
+	Uint8 loop_flag;
+	Uint8 last_chunk;
+	Uint8 b;
+	brr_block_t *block;
+
+	Sint8 bytes[9] = { 0x02, 0xF0, 0xFF, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF };
+
+	block = malloc(sizeof(brr_block_t));
+	if (NULL == block) {
+		perror("decode_brr_block: malloc()");
+		exit(1);
+	}
+
+	b = bytes[0];
+	range = (b & 0xF0) >> 4;
+	filter = (b & 0x0C) >> 2;
+	loop_flag = (b & 0x02) >> 1;
+	last_chunk = (b & 0x01);
+
+	Sint8 ff = -7;
+	printf("ff: %hhX\n", ff);
+
+	ff = ff >> 2;
+	printf("ff: %d\n", ff);
+
+	ff = ff >> 4;
+	printf("ff: %d\n", ff);
+
+	printf("range: %u\n", range);
+
+	for (int x = 0; x < 8; x++) {
+		block->samples[2 * x] = ((bytes[x + 1] & 0xF0) >> 4) << range;
+		block->samples[2 * x + 1] = (bytes[x + 1] & 0x0F) << range;
+	}
+
+	for (int x = 0; x < 16; x++)
+		printf("Sample[%d]: %d\n", x, block->samples[x]);
+
+	return(block);
+}
+
 void dump_mem_line(spc_state_t *state, Uint16 addr) {
 	int x;
 
@@ -1705,12 +1812,17 @@ int main (int argc, char *argv[])
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
 
+	// Assume that whatever was in DSP_ADDR is the current register.
+	state.current_dsp_register = state.ram[0xF2];
+
 	/* Initialize timers. Assume they are enabled */
 	set_timer(&state, 0, state.ram[SPC_REG_COUNTER0]);
 	set_timer(&state, 1, state.ram[SPC_REG_COUNTER1]);
 	set_timer(&state, 2, state.ram[SPC_REG_COUNTER2]);
 
 	printf("PC: $%04X\n", state.regs->pc);
+
+	decode_brr_block(NULL);
 
 	while (! quit) {
 		if (state.regs->pc == break_addr) {
