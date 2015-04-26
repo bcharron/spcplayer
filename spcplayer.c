@@ -72,6 +72,11 @@
 #define SPC_TIMER_CYCLES_8KHZ 250
 #define SPC_TIMER_CYCLES_64KHZ 31
 
+#define SPC_DSP_KON 0x4C
+#define SPC_DSP_KOFF 0x5C
+#define SPC_DSP_DIR 0x5D
+#define SPC_DSP_VxSCRN 0x04
+
 
 /* Passed to functions that may or not update flags */
 #define DONT_ADJUST_FLAGS 0
@@ -91,15 +96,11 @@ typedef union spc_flags_u {
 	Uint8 val;
 } spc_flags_t;
 
-typedef struct brr_header_s {
-	int granularity : 4;
-	int filter : 2;
-	int loop_flag : 1;
-	int last_chunk : 1;
-} brr_header_t;
-
 typedef struct brr_block_s {
 	Sint16 samples[16];
+	int filter;
+	int loop_flag;
+	int last_chunk;
 } brr_block_t;
 
 typedef struct spc_registers_s {
@@ -138,6 +139,15 @@ typedef struct spc_file_s {
 	id_tag_t id_tag;
 } spc_file_t;
 
+/* Represents a voice */
+typedef struct spc_voice_s {
+	int enabled;		// 1 if enabled (KON), 0 otherwise
+	Uint16 cur_addr;	// Address of current sample block
+	int next_sample;	// Number of the next sample to play in the block
+	int looping;		// Whether it's in looping mode
+	brr_block_t *block;	// Current block
+} spc_voice_t;
+
 typedef struct spc_state_s {
 	spc_registers_t *regs;
 	spc_timers_t timers;
@@ -145,6 +155,7 @@ typedef struct spc_state_s {
 	Uint8 *dsp_registers;
 	Uint8 current_dsp_register;
 	unsigned long cycle;
+	spc_voice_t voices[8];
 } spc_state_t;
 
 int dump_instruction(Uint16 pc, Uint8 *ram);
@@ -159,6 +170,11 @@ Uint16 read_word(spc_state_t *state, Uint16 addr);
 void write_byte(spc_state_t *state, Uint16 addr, Uint8 val);
 void write_word(spc_state_t *state, Uint16 addr, Uint16 val);
 void set_timer(spc_state_t *state, int timer, Uint8 value);
+Uint16 get_sample_addr(spc_state_t *state, int voice_nr);
+brr_block_t *decode_brr_block(Uint8 *ptr);
+void kon_voice(spc_state_t *state, int voice_nr);
+void koff_voice(spc_state_t *state, int voice_nr);
+void init_voice(spc_state_t *state, int voice_nr);
 
 char *flags_str(spc_flags_t flags)
 {
@@ -228,11 +244,75 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(ret);
 }
 
+void dump_voice(spc_state_t *state, int voice_nr, char *path) {
+	FILE *f;
+	int dealloc = 0;
+
+	if (NULL == path) {
+		path = malloc(1024);
+		sprintf(path, "sample_%02d", voice_nr);
+		dealloc = 1;
+	}
+
+	printf("Writing to %s\n", path);
+	f = fopen(path, "w+");
+
+	int addr = get_sample_addr(state, voice_nr);
+
+	brr_block_t *block;
+
+	do {
+		block = decode_brr_block(&state->ram[addr]);
+		addr += 9;
+
+		for (int x = 0; x < 16; x++) {
+			fprintf(f, "%d\n", block->samples[x]);
+		}
+
+		printf("last_chunk? %d\n", block->last_chunk);
+	} while(! block->last_chunk && addr < 65536);
+
+	fclose(f);
+
+	if (dealloc)
+		free(path);
+}
+
 /* Called when a register is being written to */
 void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 	printf("[DSP] Writing %02X into register %02X\n", val, reg);
-	// XXX: Do something here :)
 	state->dsp_registers[reg] = val;
+
+	switch(reg) {
+		case SPC_DSP_KON:
+		{
+			for (int x = 0; x < 8; x++) {
+				Uint8 bit = 1 << x;
+
+				if ((val & bit) > 0) {
+					printf("Enabling voice %d\n", x);
+					kon_voice(state, x);
+				}
+			}
+		}
+		break;
+
+		case SPC_DSP_KOFF:
+		{
+			for (int x = 0; x < 8; x++) {
+				Uint8 bit = 1 << x;
+
+				if ((val & bit) > 0) {
+					printf("Disabling voice %d\n", x);
+					koff_voice(state, x);
+				}
+			}
+		}
+		break;
+
+		default:
+			break;
+	}
 }
 
 /* Handles a byte being written to $00F0-$00FF (registers) */
@@ -1526,7 +1606,41 @@ spc_file_t *read_spc_file(char *filename)
 	return(spc);
 }
 
-brr_block_t *decode_brr_block(Uint8 *addr) {
+/* Returns the addr of the instrument for voice X */
+Uint16 get_sample_addr(spc_state_t *state, int voice_nr) {
+	Uint16 addr;
+	Uint16 addr_ptr;
+	Uint16 dir;
+	Uint16 voice_srcn_addr;
+	Uint8 voice_srcn;
+
+	dir = state->dsp_registers[SPC_DSP_DIR];
+	voice_srcn_addr = (voice_nr << 4) | SPC_DSP_VxSCRN;
+	voice_srcn = state->dsp_registers[voice_srcn_addr];
+
+	printf("Instrument for voice %d is %d\n", voice_nr, voice_srcn);
+
+	/*
+	 * Each entry in the 'instrument table' is 4 bytes: one word for the
+	 * addr of the sample itself and another for the loop addr.
+	 */
+	addr_ptr = (dir << 8) | (voice_srcn * 4);
+
+	addr = read_word(state, addr_ptr);
+
+	printf("ptr: %04X   addr: %04X\n", addr_ptr, addr);
+	printf("loop ptr: %04X   addr: %04X\n", addr_ptr + 2, read_word(state, addr_ptr + 2));
+
+	printf("Sample addr is %04X\n", addr);
+
+	return(addr);
+}
+
+typedef struct nibble_s {
+	int i : 4;
+} nibble_t;
+
+brr_block_t *decode_brr_block(Uint8 *ptr) {
 	Uint8 range;
 	Uint8 filter;
 	Uint8 loop_flag;
@@ -1534,7 +1648,11 @@ brr_block_t *decode_brr_block(Uint8 *addr) {
 	Uint8 b;
 	brr_block_t *block;
 
-	Sint8 bytes[9] = { 0x02, 0xF0, 0xFF, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF };
+	/*
+	Uint8 bytes[9] = { 0xA0, 0xF0, 0x8F, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF };
+
+	ptr = bytes;
+	*/
 
 	block = malloc(sizeof(brr_block_t));
 	if (NULL == block) {
@@ -1542,30 +1660,48 @@ brr_block_t *decode_brr_block(Uint8 *addr) {
 		exit(1);
 	}
 
-	b = bytes[0];
+	// printf("Byte 1: %02X\n", ptr[0]);
+
+	b = ptr[0];
 	range = (b & 0xF0) >> 4;
 	filter = (b & 0x0C) >> 2;
 	loop_flag = (b & 0x02) >> 1;
 	last_chunk = (b & 0x01);
 
-	Sint8 ff = -7;
-	printf("ff: %hhX\n", ff);
+	block->filter = filter;
+	block->loop_flag = loop_flag;
+	block->last_chunk = last_chunk;
 
-	ff = ff >> 2;
-	printf("ff: %d\n", ff);
-
-	ff = ff >> 4;
-	printf("ff: %d\n", ff);
-
-	printf("range: %u\n", range);
-
+	/* 
+	 * Go through a constant-width struct in order to sign-extend before *
+	 * scaling
+	 */
 	for (int x = 0; x < 8; x++) {
-		block->samples[2 * x] = ((bytes[x + 1] & 0xF0) >> 4) << range;
-		block->samples[2 * x + 1] = (bytes[x + 1] & 0x0F) << range;
+		Sint16 dst;
+		nibble_t tmp;
+
+		// printf("Byte %d: %02X\n", x, ptr[x + 1]);
+
+		tmp.i = (ptr[x + 1] & 0xF0) >> 4;
+		dst = tmp.i;
+		dst = dst << range;
+
+		// XXX: According to apudsp.txt, there should be a final shift
+		// to the right here...
+
+		block->samples[2 * x] = dst;
+
+		tmp.i = (ptr[x + 1] & 0x0F);
+		dst = tmp.i;
+		dst = dst << range;
+
+		block->samples[2 * x + 1] = dst;
 	}
 
+	/*
 	for (int x = 0; x < 16; x++)
 		printf("Sample[%d]: %d\n", x, block->samples[x]);
+	*/
 
 	return(block);
 }
@@ -1782,8 +1918,42 @@ void show_menu(void) {
 	printf("n          Execute next instruction\n");
 	printf("sd         Show DSP Registers\n");
 	printf("sr         Show CPU Registers\n");
+	printf("w <nr>     Write sample <nr> to disk\n");
 	printf("x <mem>    Examine memory at $<mem> (ie, \"x abcd\")\n");
 	printf("<Enter>    Execute next instruction\n");
+}
+
+/* Called when a voice is Keyed-ON ("KON") */
+void kon_voice(spc_state_t *state, int voice_nr) {
+	state->voices[voice_nr].enabled = 1;
+	state->voices[voice_nr].cur_addr = get_sample_addr(state, voice_nr);
+	state->voices[voice_nr].next_sample = 0;
+	state->voices[voice_nr].looping = 0;
+
+	/* KON can be called while the voice is already enabled */
+	if (NULL != state->voices[voice_nr].block)
+		free(state->voices[voice_nr].block);
+
+	Uint8 *block_ptr = &state->ram[state->voices[voice_nr].cur_addr];
+
+	state->voices[voice_nr].block = decode_brr_block(block_ptr);
+}
+
+/* Called when a voice is Keyed-OFF ("KOFF") */
+void koff_voice(spc_state_t *state, int voice_nr) {
+	state->voices[voice_nr].enabled = 0;
+
+	if (NULL != state->voices[voice_nr].block)
+		free(state->voices[voice_nr].block);
+}
+
+/* Initialize a voice to a default state at power-up */
+void init_voice(spc_state_t *state, int voice_nr) {
+	state->voices[voice_nr].enabled = 0;
+	state->voices[voice_nr].cur_addr = 0;
+	state->voices[voice_nr].next_sample = 0;
+	state->voices[voice_nr].looping = 0;
+	state->voices[voice_nr].block = NULL;
 }
 
 int main (int argc, char *argv[])
@@ -1820,9 +1990,13 @@ int main (int argc, char *argv[])
 	set_timer(&state, 1, state.ram[SPC_REG_COUNTER1]);
 	set_timer(&state, 2, state.ram[SPC_REG_COUNTER2]);
 
+	// XXX: Voices enable should come from KON on startup?
+	for (int x = 0; x < 8; x++)
+		init_voice(&state, x);
+
 	printf("PC: $%04X\n", state.regs->pc);
 
-	decode_brr_block(NULL);
+	// decode_brr_block(&state.ram[0x1000]);
 
 	while (! quit) {
 		if (state.regs->pc == break_addr) {
@@ -1928,6 +2102,22 @@ int main (int argc, char *argv[])
 				{
 					trace = ! trace;
 					printf("Tracing is now %s.\n", trace ? "enabled" : "disabld");
+				}
+				break;
+
+				case 'w':
+				{
+					if (strlen(input) < 4) {
+						fprintf(stderr, "Missing argument\n");
+					} else {
+						int voice_nr = atoi(&input[2]);
+
+						if (voice_nr >= 0 && voice_nr <= 7) {
+							dump_voice(&state, voice_nr, NULL);
+						} else {
+							fprintf(stderr, "Error: voice must be between 0 and 7\n");
+						}
+					}
 				}
 				break;
 
