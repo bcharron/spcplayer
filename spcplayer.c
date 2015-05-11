@@ -75,6 +75,10 @@
 #define SPC_DSP_KON 0x4C
 #define SPC_DSP_KOFF 0x5C
 #define SPC_DSP_DIR 0x5D
+
+// Per-voice registers
+#define SPC_DSP_VxPITCHL 0x02
+#define SPC_DSP_VxPITCHH 0x03
 #define SPC_DSP_VxSCRN 0x04
 
 
@@ -101,6 +105,7 @@ typedef struct brr_block_s {
 	int filter;
 	int loop_flag;
 	int last_chunk;
+	int loop_code;		// Addressing last_chunk + loop_flag as one 2-bit value.
 } brr_block_t;
 
 typedef struct spc_registers_s {
@@ -146,6 +151,9 @@ typedef struct spc_voice_s {
 	int next_sample;	// Number of the next sample to play in the block
 	int looping;		// Whether it's in looping mode
 	brr_block_t *block;	// Current block
+	int step;		// Current step, based on pitch
+	int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
+	Uint16 prev_brr_samples[4];	// Used for interpolation
 } spc_voice_t;
 
 typedef struct spc_state_s {
@@ -157,6 +165,42 @@ typedef struct spc_state_s {
 	unsigned long cycle;
 	spc_voice_t voices[8];
 } spc_state_t;
+
+/* Gaussian Interpolation table - straight from no$sns specs */
+int INTERP_TABLE[] = {
+	0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000,
+	0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x002, 0x002, 0x002, 0x002, 0x002,
+	0x002, 0x002, 0x003, 0x003, 0x003, 0x003, 0x003, 0x004, 0x004, 0x004, 0x004, 0x004, 0x005, 0x005, 0x005, 0x005,
+	0x006, 0x006, 0x006, 0x006, 0x007, 0x007, 0x007, 0x008, 0x008, 0x008, 0x009, 0x009, 0x009, 0x00A, 0x00A, 0x00A,
+	0x00B, 0x00B, 0x00B, 0x00C, 0x00C, 0x00D, 0x00D, 0x00E, 0x00E, 0x00F, 0x00F, 0x00F, 0x010, 0x010, 0x011, 0x011,
+	0x012, 0x013, 0x013, 0x014, 0x014, 0x015, 0x015, 0x016, 0x017, 0x017, 0x018, 0x018, 0x019, 0x01A, 0x01B, 0x01B,
+	0x01C, 0x01D, 0x01D, 0x01E, 0x01F, 0x020, 0x020, 0x021, 0x022, 0x023, 0x024, 0x024, 0x025, 0x026, 0x027, 0x028,
+	0x029, 0x02A, 0x02B, 0x02C, 0x02D, 0x02E, 0x02F, 0x030, 0x031, 0x032, 0x033, 0x034, 0x035, 0x036, 0x037, 0x038,
+	0x03A, 0x03B, 0x03C, 0x03D, 0x03E, 0x040, 0x041, 0x042, 0x043, 0x045, 0x046, 0x047, 0x049, 0x04A, 0x04C, 0x04D,
+	0x04E, 0x050, 0x051, 0x053, 0x054, 0x056, 0x057, 0x059, 0x05A, 0x05C, 0x05E, 0x05F, 0x061, 0x063, 0x064, 0x066,
+	0x068, 0x06A, 0x06B, 0x06D, 0x06F, 0x071, 0x073, 0x075, 0x076, 0x078, 0x07A, 0x07C, 0x07E, 0x080, 0x082, 0x084,
+	0x086, 0x089, 0x08B, 0x08D, 0x08F, 0x091, 0x093, 0x096, 0x098, 0x09A, 0x09C, 0x09F, 0x0A1, 0x0A3, 0x0A6, 0x0A8,
+	0x0AB, 0x0AD, 0x0AF, 0x0B2, 0x0B4, 0x0B7, 0x0BA, 0x0BC, 0x0BF, 0x0C1, 0x0C4, 0x0C7, 0x0C9, 0x0CC, 0x0CF, 0x0D2,
+	0x0D4, 0x0D7, 0x0DA, 0x0DD, 0x0E0, 0x0E3, 0x0E6, 0x0E9, 0x0EC, 0x0EF, 0x0F2, 0x0F5, 0x0F8, 0x0FB, 0x0FE, 0x101,
+	0x104, 0x107, 0x10B, 0x10E, 0x111, 0x114, 0x118, 0x11B, 0x11E, 0x122, 0x125, 0x129, 0x12C, 0x130, 0x133, 0x137,
+	0x13A, 0x13E, 0x141, 0x145, 0x148, 0x14C, 0x150, 0x153, 0x157, 0x15B, 0x15F, 0x162, 0x166, 0x16A, 0x16E, 0x172,
+	0x176, 0x17A, 0x17D, 0x181, 0x185, 0x189, 0x18D, 0x191, 0x195, 0x19A, 0x19E, 0x1A2, 0x1A6, 0x1AA, 0x1AE, 0x1B2,
+	0x1B7, 0x1BB, 0x1BF, 0x1C3, 0x1C8, 0x1CC, 0x1D0, 0x1D5, 0x1D9, 0x1DD, 0x1E2, 0x1E6, 0x1EB, 0x1EF, 0x1F3, 0x1F8,
+	0x1FC, 0x201, 0x205, 0x20A, 0x20F, 0x213, 0x218, 0x21C, 0x221, 0x226, 0x22A, 0x22F, 0x233, 0x238, 0x23D, 0x241,
+	0x246, 0x24B, 0x250, 0x254, 0x259, 0x25E, 0x263, 0x267, 0x26C, 0x271, 0x276, 0x27B, 0x280, 0x284, 0x289, 0x28E,
+	0x293, 0x298, 0x29D, 0x2A2, 0x2A6, 0x2AB, 0x2B0, 0x2B5, 0x2BA, 0x2BF, 0x2C4, 0x2C9, 0x2CE, 0x2D3, 0x2D8, 0x2DC,
+	0x2E1, 0x2E6, 0x2EB, 0x2F0, 0x2F5, 0x2FA, 0x2FF, 0x304, 0x309, 0x30E, 0x313, 0x318, 0x31D, 0x322, 0x326, 0x32B,
+	0x330, 0x335, 0x33A, 0x33F, 0x344, 0x349, 0x34E, 0x353, 0x357, 0x35C, 0x361, 0x366, 0x36B, 0x370, 0x374, 0x379,
+	0x37E, 0x383, 0x388, 0x38C, 0x391, 0x396, 0x39B, 0x39F, 0x3A4, 0x3A9, 0x3AD, 0x3B2, 0x3B7, 0x3BB, 0x3C0, 0x3C5,
+	0x3C9, 0x3CE, 0x3D2, 0x3D7, 0x3DC, 0x3E0, 0x3E5, 0x3E9, 0x3ED, 0x3F2, 0x3F6, 0x3FB, 0x3FF, 0x403, 0x408, 0x40C,
+	0x410, 0x415, 0x419, 0x41D, 0x421, 0x425, 0x42A, 0x42E, 0x432, 0x436, 0x43A, 0x43E, 0x442, 0x446, 0x44A, 0x44E,
+	0x452, 0x455, 0x459, 0x45D, 0x461, 0x465, 0x468, 0x46C, 0x470, 0x473, 0x477, 0x47A, 0x47E, 0x481, 0x485, 0x488,
+	0x48C, 0x48F, 0x492, 0x496, 0x499, 0x49C, 0x49F, 0x4A2, 0x4A6, 0x4A9, 0x4AC, 0x4AF, 0x4B2, 0x4B5, 0x4B7, 0x4BA,
+	0x4BD, 0x4C0, 0x4C3, 0x4C5, 0x4C8, 0x4CB, 0x4CD, 0x4D0, 0x4D2, 0x4D5, 0x4D7, 0x4D9, 0x4DC, 0x4DE, 0x4E0, 0x4E3,
+	0x4E5, 0x4E7, 0x4E9, 0x4EB, 0x4ED, 0x4EF, 0x4F1, 0x4F3, 0x4F5, 0x4F6, 0x4F8, 0x4FA, 0x4FB, 0x4FD, 0x4FF, 0x500,
+	0x502, 0x503, 0x504, 0x506, 0x507, 0x508, 0x50A, 0x50B, 0x50C, 0x50D, 0x50E, 0x50F, 0x510, 0x511, 0x511, 0x512,
+	0x513, 0x514, 0x514, 0x515, 0x516, 0x516, 0x517, 0x517, 0x517, 0x518, 0x518, 0x518, 0x518, 0x518, 0x519, 0x519
+};
 
 int dump_instruction(Uint16 pc, Uint8 *ram);
 void dump_registers(spc_registers_t *registers);
@@ -170,11 +214,12 @@ Uint16 read_word(spc_state_t *state, Uint16 addr);
 void write_byte(spc_state_t *state, Uint16 addr, Uint8 val);
 void write_word(spc_state_t *state, Uint16 addr, Uint16 val);
 void set_timer(spc_state_t *state, int timer, Uint8 value);
-Uint16 get_sample_addr(spc_state_t *state, int voice_nr);
+Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop);
 brr_block_t *decode_brr_block(Uint8 *ptr);
 void kon_voice(spc_state_t *state, int voice_nr);
 void koff_voice(spc_state_t *state, int voice_nr);
 void init_voice(spc_state_t *state, int voice_nr);
+int get_voice_pitch(spc_state_t *state, int voice_nr);
 
 char *flags_str(spc_flags_t flags)
 {
@@ -244,9 +289,17 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(ret);
 }
 
+/*
+	Dump a voice to file. If loop is defined, loops for 32k samples (~1 second of audio at 32kHz)
+*/
 void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 	FILE *f;
 	int dealloc = 0;
+	int pitch = 0x1000;	// XXX: Pitch is hardocded.
+	int step = pitch;
+	int counter = 0;
+	int done = 0;
+	int written_samples = 0;
 
 	if (NULL == path) {
 		path = malloc(1024);
@@ -257,20 +310,67 @@ void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 	printf("Writing to %s\n", path);
 	f = fopen(path, "w+");
 
-	int addr = get_sample_addr(state, voice_nr);
+	int addr = get_sample_addr(state, voice_nr, 0);
+
+	pitch = get_voice_pitch(state, voice_nr);
+	step = pitch;
+
+	printf("Pitch: %d (%04X)\n", pitch, pitch);
 
 	brr_block_t *block;
 
+	counter = 0;
 	do {
 		block = decode_brr_block(&state->ram[addr]);
 		addr += 9;
 
+		counter = 0;
+
+		// Go through samples 0..3, 4..7, 8..11, 12..15
+		// for (int x = 0; x < 4; x++) {
+		int x = 0;
+			counter = counter % 65536;
+
+			while (counter < (1 << 16)) {
+				int brr_nr = ((counter & 0xF000) >> 12) & 0xF;
+				int index = ((counter & 0x0FF0) >> 4);
+				Sint16 sample = block->samples[x * 4 + brr_nr];
+
+				assert(brr_nr <= 15);
+				assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
+
+
+				// Uint16 out = (INTERP_TABLE[0x00 + index] * sample) >> 10;
+				Uint16 out = (INTERP_TABLE[0x00 + index] * sample);
+
+				fprintf(f, "%d\n", sample);
+
+				written_samples++;
+
+				printf("sample: %d   out: %d  brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, out, brr_nr, index, counter, counter);
+
+				counter += step;
+			}
+		// }
+
+		/*
 		for (int x = 0; x < 16; x++) {
 			fprintf(f, "%d\n", block->samples[x]);
 		}
+		*/
 
 		printf("last_chunk? %d\n", block->last_chunk);
-	} while(! block->last_chunk && addr < 65536);
+		printf("loop? %d\n", block->loop_flag);
+
+		if (block->last_chunk) {
+			if (block->loop_flag) {
+				printf("Starting loop.\n");
+				addr = get_sample_addr(state, voice_nr, 1);
+			} else {
+				done = 1;
+			}
+		}
+	} while(! done && written_samples < 32000 && addr < 65536);
 
 	fclose(f);
 
@@ -487,6 +587,27 @@ Uint16 read_word(spc_state_t *state, Uint16 addr) {
 	ret = make16(h, l);
 
 	return(ret);
+}
+
+/* Get the contents of DSP register X. Does not involve read_byte(). */
+Uint8 get_dsp(spc_state_t *state, Uint8 reg) {
+	Uint8 b;
+
+	b = state->dsp_registers[reg];
+
+	return(b);
+}
+
+/* Get the register X for DSP Voice Y */
+Uint8 get_dsp_voice(spc_state_t *state, int voice_nr, Uint8 reg) {
+	Uint8 addr;
+	Uint8 result;
+
+	addr = voice_nr * 0x10 + reg;
+
+	result = get_dsp(state, reg);
+
+	return(result);
 }
 
 /* Perform the branch if flag 'flag' is set */
@@ -1606,8 +1727,9 @@ spc_file_t *read_spc_file(char *filename)
 	return(spc);
 }
 
-/* Returns the addr of the instrument for voice X */
-Uint16 get_sample_addr(spc_state_t *state, int voice_nr) {
+/* Returns the addr of the instrument for voice X. If loop is non-zero, return
+ * the address of the loop instead. */
+Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	Uint16 addr;
 	Uint16 addr_ptr;
 	Uint16 dir;
@@ -1626,10 +1748,13 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr) {
 	 */
 	addr_ptr = (dir << 8) | (voice_srcn * 4);
 
-	addr = read_word(state, addr_ptr);
+	if (loop)
+		addr = read_word(state, addr_ptr + 2);
+	else
+		addr = read_word(state, addr_ptr);
 
 	printf("ptr: %04X   addr: %04X\n", addr_ptr, addr);
-	printf("loop ptr: %04X   addr: %04X\n", addr_ptr + 2, read_word(state, addr_ptr + 2));
+	// printf("loop ptr: %04X   addr: %04X\n", addr_ptr + 2, read_word(state, addr_ptr + 2));
 
 	printf("Sample addr is %04X\n", addr);
 
@@ -1645,6 +1770,7 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 	Uint8 filter;
 	Uint8 loop_flag;
 	Uint8 last_chunk;
+	Uint8 loop_code;
 	Uint8 b;
 	brr_block_t *block;
 
@@ -1667,10 +1793,12 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 	filter = (b & 0x0C) >> 2;
 	loop_flag = (b & 0x02) >> 1;
 	last_chunk = (b & 0x01);
+	loop_code = (b & 0x03);
 
 	block->filter = filter;
 	block->loop_flag = loop_flag;
 	block->last_chunk = last_chunk;
+	block->loop_code = loop_code;
 
 	/* 
 	 * Go through a constant-width struct in order to sign-extend before *
@@ -1684,7 +1812,7 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 
 		tmp.i = (ptr[x + 1] & 0xF0) >> 4;
 		dst = tmp.i;
-		dst = dst << range;
+		dst = (dst << range) >> 1;
 
 		// XXX: According to apudsp.txt, there should be a final shift
 		// to the right here...
@@ -1693,7 +1821,7 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 
 		tmp.i = (ptr[x + 1] & 0x0F);
 		dst = tmp.i;
-		dst = dst << range;
+		dst = (dst << range) >> 1;
 
 		block->samples[2 * x + 1] = dst;
 	}
@@ -1768,7 +1896,7 @@ void dump_dsp(spc_state_t *state) {
 			case 0x52:
 			case 0x62:
 			case 0x72:
-				printf("Voice %d ($%02X): Pitch (L): %u\n", voice, i, dsp[i]);
+				printf("Voice %d ($%02X): Pitch (L): %u (%02X)\n", voice, i, dsp[i], dsp[i]);
 				break;
 
 			case 0x03:
@@ -1779,7 +1907,7 @@ void dump_dsp(spc_state_t *state) {
 			case 0x53:
 			case 0x63:
 			case 0x73:
-				printf("Voice %d ($%02X): Pitch (H): %u\n", voice, i, dsp[i]);
+				printf("Voice %d ($%02X): Pitch (H): %u (%02X)\n", voice, i, dsp[i], dsp[i]);
 				break;
 
 			case 0x04:
@@ -1923,12 +2051,33 @@ void show_menu(void) {
 	printf("<Enter>    Execute next instruction\n");
 }
 
+int get_voice_pitch(spc_state_t *state, int voice_nr) {
+	Uint8 pitch_low;
+	Uint8 pitch_high;
+	int pitch;
+
+	pitch_low = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHL);
+	pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH);
+
+	pitch = make16(pitch_high, pitch_low);
+
+	return(pitch);
+}
+
 /* Called when a voice is Keyed-ON ("KON") */
 void kon_voice(spc_state_t *state, int voice_nr) {
+	int pitch;
+
+	pitch = get_voice_pitch(state, voice_nr);
+
 	state->voices[voice_nr].enabled = 1;
-	state->voices[voice_nr].cur_addr = get_sample_addr(state, voice_nr);
+	state->voices[voice_nr].cur_addr = get_sample_addr(state, voice_nr, 0);
 	state->voices[voice_nr].next_sample = 0;
 	state->voices[voice_nr].looping = 0;
+	
+	// XXX: Include PMON
+	state->voices[voice_nr].step = pitch;
+	state->voices[voice_nr].counter = 0;
 
 	/* KON can be called while the voice is already enabled */
 	if (NULL != state->voices[voice_nr].block)
@@ -1954,6 +2103,12 @@ void init_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].next_sample = 0;
 	state->voices[voice_nr].looping = 0;
 	state->voices[voice_nr].block = NULL;
+	state->voices[voice_nr].step = 0;
+	state->voices[voice_nr].prev_brr_samples[0] = 0;
+	state->voices[voice_nr].prev_brr_samples[1] = 0;
+	state->voices[voice_nr].prev_brr_samples[2] = 0;
+	state->voices[voice_nr].prev_brr_samples[3] = 0;
+	state->voices[voice_nr].counter = 0;
 }
 
 int main (int argc, char *argv[])
