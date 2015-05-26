@@ -86,6 +86,15 @@
 #define DONT_ADJUST_FLAGS 0
 #define ADJUST_FLAGS 1
 
+enum trace_flags {
+	TRACE_CPU_JUMPS = 0x01,
+	TRACE_APU_VOICES = 0x02,
+	TRACE_REGISTER_WRITES = 0x04,
+	TRACE_REGISTER_READS = 0x08
+};
+
+#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS)
+
 typedef union spc_flags_u {
 	struct {
 		int c : 1; // Carry
@@ -164,6 +173,7 @@ typedef struct spc_state_s {
 	Uint8 current_dsp_register;
 	unsigned long cycle;
 	spc_voice_t voices[8];
+	int trace;
 } spc_state_t;
 
 /* Gaussian Interpolation table - straight from no$sns specs */
@@ -380,7 +390,9 @@ void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 
 /* Called when a register is being written to */
 void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
-	printf("[DSP] Writing %02X into register %02X\n", val, reg);
+	if (state->trace & TRACE_REGISTER_WRITES)
+		printf("[DSP] Writing %02X into register %02X\n", val, reg);
+
 	state->dsp_registers[reg] = val;
 
 	switch(reg) {
@@ -390,7 +402,9 @@ void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 				Uint8 bit = 1 << x;
 
 				if ((val & bit) > 0) {
-					printf("Enabling voice %d\n", x);
+					if (state->trace & TRACE_APU_VOICES)
+						printf("Enabling voice %d\n", x);
+
 					kon_voice(state, x);
 				}
 			}
@@ -403,7 +417,9 @@ void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 				Uint8 bit = 1 << x;
 
 				if ((val & bit) > 0) {
-					printf("Disabling voice %d\n", x);
+					if (state->trace & TRACE_APU_VOICES)
+						printf("Disabling voice %d\n", x);
+
 					koff_voice(state, x);
 				}
 			}
@@ -417,7 +433,8 @@ void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 
 /* Handles a byte being written to $00F0-$00FF (registers) */
 void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
-	printf("Register write $#%02X into $%04X\n", val, addr);
+	if (state->trace & TRACE_REGISTER_WRITES)
+		printf("Register write $#%02X into $%04X\n", val, addr);
 
 	switch(addr) {
 		case 0xF0:	// Test?
@@ -489,7 +506,8 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 Uint8 register_read(spc_state_t *state, Uint16 addr) {
 	Uint8 val;
 
-	// printf("Register read $%04X\n", addr);
+	if (state->trace & TRACE_REGISTER_READS)
+		printf("Register read $%04X\n", addr);
 
 	switch(addr) {
 		case 0xF0:	// Test?
@@ -616,7 +634,8 @@ int branch_if_flag(spc_state_t *state, int flag, Uint8 operand1) {
 
 	if (flag) {
 		state->regs->pc += (Sint8) operand1 + 2;
-		// printf("Jumping to 0x%04X\n", state->regs->pc);
+		if (state->trace & TRACE_CPU_JUMPS)
+			printf("Jumping to 0x%04X\n", state->regs->pc);
 		cycles = 6;
 	} else {
 		state->regs->pc += 2;
@@ -764,7 +783,8 @@ void do_call(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
 
 	ret_addr = state->regs->pc + 3;
 
-	printf("Pushing return address $%04X on the stack\n", ret_addr);
+	if (state->trace & TRACE_CPU_JUMPS)
+		printf("Pushing return address $%04X on the stack\n", ret_addr);
 
 	do_push(state, get_high(ret_addr));
 	do_push(state, get_low(ret_addr));
@@ -772,7 +792,8 @@ void do_call(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
 	dest_addr = make16(operand2, operand1);
 	state->regs->pc = dest_addr;
 
-	// printf("Jumping to $%04X\n", state->regs->pc);
+	if (state->trace & TRACE_CPU_JUMPS)
+		printf("Jumping to $%04X\n", state->regs->pc);
 }
 
 /* Update the flags based on (operand1 - operand2) */
@@ -839,7 +860,7 @@ Uint16 do_sub_ya(spc_state_t *state, Uint16 val) {
 	ya = make16(state->regs->y, state->regs->a);
 
 	result = ya - val;
-	printf("Result: %08x\n", result);
+	// printf("Result: %08x\n", result);
 	sResult = ya - val;
 	ret = (Uint16) (result & 0xFFFF);
 
@@ -2136,6 +2157,7 @@ int main (int argc, char *argv[])
 	state.ram = spc_file->ram;
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
+	state.trace = 0;
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -2256,7 +2278,13 @@ int main (int argc, char *argv[])
 				case 't':
 				{
 					trace = ! trace;
+
 					printf("Tracing is now %s.\n", trace ? "enabled" : "disabld");
+
+					if (trace)
+						state.trace |= TRACE_CPU_JUMPS;
+					else
+						state.trace &= ~TRACE_CPU_JUMPS;
 				}
 				break;
 
