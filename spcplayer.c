@@ -634,8 +634,10 @@ int branch_if_flag(spc_state_t *state, int flag, Uint8 operand1) {
 
 	if (flag) {
 		state->regs->pc += (Sint8) operand1 + 2;
+
 		if (state->trace & TRACE_CPU_JUMPS)
 			printf("Jumping to 0x%04X\n", state->regs->pc);
+
 		cycles = 6;
 	} else {
 		state->regs->pc += 2;
@@ -706,7 +708,10 @@ int do_bbc(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 		state->regs->pc += 3;
 	} else {
 		state->regs->pc += (Sint8) rel + 3;
-		// printf("Jumping to 0x%04X\n", state->regs->pc);
+
+		if (state->trace & TRACE_CPU_JUMPS)
+			printf("Jumping to 0x%04X\n", state->regs->pc);
+
 		cycles = 7;
 	}
 
@@ -722,7 +727,10 @@ int do_bbs(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 
 	if (state->ram[src_addr] & test) {
 		state->regs->pc += (Sint8) rel + 3;
-		// printf("Jumping to 0x%04X\n", state->regs->pc);
+
+		if (state->trace & TRACE_CPU_JUMPS)
+			printf("Jumping to 0x%04X\n", state->regs->pc);
+
 		cycles = 7;
 	} else {
 		state->regs->pc += 3;
@@ -774,7 +782,8 @@ void do_ret(spc_state_t *state) {
 	// printf("Popped address %04X\n", ret_addr);
 
 	state->regs->pc = ret_addr;
-	// printf("Jumping to $%04X\n", state->regs->pc);
+	if (state->trace & TRACE_CPU_JUMPS)
+		printf("Returning to $%04X\n", state->regs->pc);
 }
 
 void do_call(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
@@ -1052,6 +1061,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x2F: // BRA xx
 			branch_if_flag(state, 1, operand1);
+			pc_adjusted = 1;
 			cycles = 4;
 			break;	
 
@@ -1108,6 +1118,9 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->pc = operand;
 			pc_adjusted = 1;
 			cycles = 3;
+
+			if (state->trace & TRACE_CPU_JUMPS)
+				printf("JMP to %04X\n", operand);
 		}
 		break;
 
