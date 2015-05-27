@@ -90,10 +90,11 @@ enum trace_flags {
 	TRACE_CPU_JUMPS = 0x01,
 	TRACE_APU_VOICES = 0x02,
 	TRACE_REGISTER_WRITES = 0x04,
-	TRACE_REGISTER_READS = 0x08
+	TRACE_REGISTER_READS = 0x08,
+	TRACE_CPU_INSTRUCTIONS = 0x10
 };
 
-#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS)
+#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS)
 
 typedef union spc_flags_u {
 	struct {
@@ -2124,7 +2125,11 @@ void show_menu(void) {
 	printf("n          Execute next instruction\n");
 	printf("sd         Show DSP Registers\n");
 	printf("sr         Show CPU Registers\n");
-	printf("t          Enable tracing\n");
+	printf("ta         Enable/disable ALL tracing \n");
+	printf("ti         Enable/disable instruction tracing \n");
+	printf("tj         Enable/disable jump/call tracing \n");
+	printf("tr         Enable/disable register read/write tracing \n");
+	printf("tv         Enable/disable voice-register tracing\n");
 	printf("w <nr>     Write sample <nr> to disk\n");
 	printf("x <mem>    Examine memory at $<mem> (ie, \"x abcd\")\n");
 	printf("<Enter>    Execute next instruction\n");
@@ -2198,7 +2203,6 @@ int main (int argc, char *argv[])
 	int quit = 0;
 	int do_break = 1;
 	int break_addr = -1;
-	int trace = 0;
 
 	if (argc != 2) {
 		usage(argv[0]);
@@ -2215,7 +2219,7 @@ int main (int argc, char *argv[])
 	state.ram = spc_file->ram;
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
-	state.trace = TRACE_ALL;
+	state.trace = 0;
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -2335,14 +2339,60 @@ int main (int argc, char *argv[])
 
 				case 't':
 				{
-					trace = ! trace;
+					if (strlen(input) == 3) {
+						switch(input[1]) {
+							case 'a' :
+							{
+								if ((state.trace & TRACE_ALL) != TRACE_ALL)
+									state.trace = TRACE_ALL;
+								else
+									state.trace = 0;
 
-					printf("Tracing is now %s.\n", trace ? "enabled" : "disabld");
+								printf("Instruction tracing is now %s.\n", state.trace & TRACE_CPU_INSTRUCTIONS ? "enabled" : "disabled");
+								printf("Jump/Call tracing is now %s.\n", state.trace & TRACE_CPU_JUMPS ? "enabled" : "disabled");
+								printf("Register read/write tracing is now %s.\n", state.trace & TRACE_REGISTER_WRITES ? "enabled" : "disabled");
+								printf("Voices tracing is now %s.\n", state.trace & TRACE_APU_VOICES ? "enabled" : "disabled");
+							}
+							break;
 
-					if (trace)
-						state.trace |= TRACE_CPU_JUMPS;
-					else
-						state.trace &= ~TRACE_CPU_JUMPS;
+							case 'i' :
+							{
+								state.trace ^= TRACE_CPU_INSTRUCTIONS;;
+								printf("Instruction tracing is now %s.\n", state.trace & TRACE_CPU_INSTRUCTIONS ? "enabled" : "disabled");
+							}
+							break;
+
+							case 'j' :
+							{
+								state.trace ^= TRACE_CPU_JUMPS;;
+								printf("Jump/Call tracing is now %s.\n", state.trace & TRACE_CPU_JUMPS ? "enabled" : "disabled");
+							}
+							break;
+
+							case 'r' :
+							{
+								state.trace ^= TRACE_REGISTER_WRITES;;
+								state.trace ^= TRACE_REGISTER_READS;;
+								printf("Register read/write tracing is now %s.\n", state.trace & TRACE_REGISTER_WRITES ? "enabled" : "disabled");
+							}
+							break;
+
+							case 'v' :
+							{
+								state.trace ^= TRACE_APU_VOICES;
+								printf("Voices tracing is now %s.\n", state.trace & TRACE_APU_VOICES ? "enabled" : "disabled");
+							}
+							break;
+
+							default:
+							{
+								fprintf(stderr, "Unknown trace, '%c'\n", input[1]);
+							}
+							break;
+						}
+					} else {
+						fprintf(stderr, "Missing argument to trace\n");
+					}
 				}
 				break;
 
@@ -2381,7 +2431,7 @@ int main (int argc, char *argv[])
 			}
 		} else {
 			// dump_registers(state.regs);
-			if (trace)
+			if (state.trace & TRACE_CPU_INSTRUCTIONS)
 				dump_instruction(state.regs->pc, state.ram);
 
 			execute_next(&state);
