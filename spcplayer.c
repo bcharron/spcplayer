@@ -1026,6 +1026,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 6;
 			break;
 
+		case 0x10: // BPL
+			cycles = branch_if_flag_clear(state, state->regs->psw.f.n, operand1);
+			pc_adjusted = 1;
+			break;
+
 		case 0x13: // BBC0 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 0, dp_addr, operand2);
@@ -1065,6 +1070,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;	
 
+		case 0x30: // BMI
+			cycles = branch_if_flag_set(state, state->regs->psw.f.n, operand1);
+			pc_adjusted = 1;
+			break;
+
 		case 0x33: // BBC1 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 1, dp_addr, operand2);
@@ -1097,6 +1107,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->a ^= val;
 			adjust_flags(state, state->regs->a);
 			cycles = 3;
+			break;
+
+		case 0x50: // BVC
+			cycles = branch_if_flag_clear(state, state->regs->psw.f.v, operand1);
+			pc_adjusted = 1;
 			break;
 
 		case 0x5C: // LSR A
@@ -1167,6 +1182,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x70: // BVS
+			cycles = branch_if_flag_set(state, state->regs->psw.f.v, operand1);
+			pc_adjusted = 1;
+			break;
+
 		case 0x7A: // ADDW YA, $xx
 		{
 			Uint8 l = get_direct_page_byte(state, operand1);
@@ -1198,11 +1218,28 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x84: // ADC A, $dp
+			dp_addr = get_direct_page_addr(state, operand2);
+
+			val = read_byte(state, dp_addr);
+
+			state->regs->a = do_adc(state, state->regs->a, val);
+			cycles = 3;
+			break;
+
 		case 0x8D: // MOV Y,#$xx
 			state->regs->y = operand1;
 			adjust_flags(state, state->regs->y);
 			cycles = 2;
 			break;
+
+		/*
+		XXX: Need to get the exact binary output for PSW.
+		case 0x8E: // POP PSW
+			state->regs->psw = do_pop(state);
+			cycles = 4;
+			break;
+		*/
 
 		case 0x8F: // MOV $dp, #$xx
 			dp_addr = get_direct_page_addr(state, operand2);
@@ -1211,7 +1248,6 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0x90: // BCC
-			// cycles = do_bcc(state, state->ram[addr + 1]);
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.c, operand1);
 			pc_adjusted = 1;
 			break;
@@ -1307,6 +1343,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0xCE: // POP X
+			state->regs->x = do_pop(state);
+			cycles = 4;
+			break;
+
 		case 0xCF: // MUL YA
 		{
 			Uint16 result = state->regs->y * state->regs->a;
@@ -1319,7 +1360,6 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		break;
 
 		case 0xD0: // BNE $xx
-			// cycles = do_bne(state, operand1);
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
 			pc_adjusted = 1;
 			break;
@@ -1433,8 +1473,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0xEE: // POP Y
+			state->regs->y = do_pop(state);
+			cycles = 4;
+			break;
+
 		case 0xF0: // BEQ
-			// cycles = do_beq(state, operand1);
 			cycles = branch_if_flag_set(state, state->regs->psw.f.z, operand1);
 			pc_adjusted = 1;
 			break;
@@ -2080,6 +2124,7 @@ void show_menu(void) {
 	printf("n          Execute next instruction\n");
 	printf("sd         Show DSP Registers\n");
 	printf("sr         Show CPU Registers\n");
+	printf("t          Enable tracing\n");
 	printf("w <nr>     Write sample <nr> to disk\n");
 	printf("x <mem>    Examine memory at $<mem> (ie, \"x abcd\")\n");
 	printf("<Enter>    Execute next instruction\n");
@@ -2170,7 +2215,7 @@ int main (int argc, char *argv[])
 	state.ram = spc_file->ram;
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
-	state.trace = 0;
+	state.trace = TRACE_ALL;
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
