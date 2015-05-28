@@ -81,6 +81,10 @@
 #define SPC_DSP_VxPITCHH 0x03
 #define SPC_DSP_VxSCRN 0x04
 
+enum error_values {
+	SUCCESS = 0,
+	FATAL_ERROR = 1
+};
 
 /* Passed to functions that may or not update flags */
 #define DONT_ADJUST_FLAGS 0
@@ -91,10 +95,11 @@ enum trace_flags {
 	TRACE_APU_VOICES = 0x02,
 	TRACE_REGISTER_WRITES = 0x04,
 	TRACE_REGISTER_READS = 0x08,
-	TRACE_CPU_INSTRUCTIONS = 0x10
+	TRACE_CPU_INSTRUCTIONS = 0x10,
+	TRACE_COUNTERS = 0x20
 };
 
-#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS)
+#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS | TRACE_COUNTERS)
 
 typedef union spc_flags_u {
 	struct {
@@ -231,6 +236,7 @@ void kon_voice(spc_state_t *state, int voice_nr);
 void koff_voice(spc_state_t *state, int voice_nr);
 void init_voice(spc_state_t *state, int voice_nr);
 int get_voice_pitch(spc_state_t *state, int voice_nr);
+Sint16 get_next_sample(spc_state_t *state, int voice_nr);
 
 char *flags_str(spc_flags_t flags)
 {
@@ -962,7 +968,8 @@ void update_counters(spc_state_t *state) {
 				// Internal counter resets when the timer hits.
 				state->timers.counter[timer] = 0;
 
-				printf("TIMER %d HIT: %d\n", timer, state->ram[SPC_REG_COUNTER0 + timer]);
+				if (state->trace & TRACE_COUNTERS)
+					printf("TIMER %d HIT: %d\n", timer, state->ram[SPC_REG_COUNTER0 + timer]);
 			}
 		}
 	}
@@ -1819,7 +1826,7 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	voice_srcn_addr = (voice_nr << 4) | SPC_DSP_VxSCRN;
 	voice_srcn = state->dsp_registers[voice_srcn_addr];
 
-	printf("Instrument for voice %d is %d\n", voice_nr, voice_srcn);
+	// printf("Instrument for voice %d is %d\n", voice_nr, voice_srcn);
 
 	/*
 	 * Each entry in the 'instrument table' is 4 bytes: one word for the
@@ -1832,10 +1839,10 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	else
 		addr = read_word(state, addr_ptr);
 
-	printf("ptr: %04X   addr: %04X\n", addr_ptr, addr);
+	// printf("ptr: %04X   addr: %04X\n", addr_ptr, addr);
 	// printf("loop ptr: %04X   addr: %04X\n", addr_ptr + 2, read_word(state, addr_ptr + 2));
 
-	printf("Sample addr is %04X\n", addr);
+	// printf("Sample addr is %04X\n", addr);
 
 	return(addr);
 }
@@ -2148,6 +2155,94 @@ int get_voice_pitch(spc_state_t *state, int voice_nr) {
 	return(pitch);
 }
 
+void audio_callback(void *userdata, Uint8 * stream, int len) {
+	int voice_nr;
+	spc_state_t *state = (spc_state_t *) userdata;
+	Sint16 sample;
+
+	printf("audio_callback(len=%d)\n", len);
+
+	for (voice_nr = 0; voice_nr < 8; voice_nr++) {
+		if (state->voices[voice_nr].enabled) {
+			sample = get_next_sample(state, voice_nr);
+		}
+	}
+}
+
+/* 
+ * Decode the next BRR block for this voice.
+ *
+ * Returns 1 if another block could be decoded, 0 if this is it
+ */
+int decode_next_brr_block(spc_state_t *state, int voice_nr) {
+		int ret = 1;
+		spc_voice_t *v = &state->voices[voice_nr];
+		brr_block_t *block = v->block;
+
+		/* kon() initializes v->block, so block should never be NULL
+		 * when we get here.
+		 */
+		assert(NULL != v->block);
+
+		printf("last_chunk? %d\n", block->last_chunk);
+		printf("loop? %d\n", block->loop_flag);
+
+		v->cur_addr += 9;
+
+		if (v->block->last_chunk) {
+			if (v->block->loop_flag) {
+				v->cur_addr = get_sample_addr(state, voice_nr, 1);
+			} else {
+				// XXX: Should the koff() be done here or the caller?
+				ret = 0;
+			}
+
+			free(v->block);
+		}
+
+		if (ret) {
+			v->block = decode_brr_block(&state->ram[v->cur_addr]);
+			v->next_sample = 0;
+		}
+
+		return(ret);
+}
+
+Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
+	int done = 0;
+	spc_voice_t *v = &state->voices[voice_nr];
+	Sint16 sample;
+
+	if (v->next_sample > 15) {
+		done = decode_next_brr_block(state, voice_nr);
+		v->next_sample = 0;
+	}
+
+	// XXX: Pitch can probably change while voice is playing.
+
+	if (done) {
+		v->enabled = 0;
+
+		// Silence
+		sample = 0;
+	} else {
+		int brr_nr = ((v->counter & 0xF000) >> 12) & 0xF;
+		int index = ((v->counter & 0x0FF0) >> 4);
+
+		assert(brr_nr <= 15);
+		assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
+
+		sample = v->block->samples[brr_nr];
+
+		// Uint16 out = (INTERP_TABLE[0x00 + index] * sample) >> 10;
+		// Sint16 sample = (INTERP_TABLE[0x00 + index] * sample);
+
+		v->counter += v->step;
+	}
+
+	return(sample);
+}
+
 /* Called when a voice is Keyed-ON ("KON") */
 void kon_voice(spc_state_t *state, int voice_nr) {
 	int pitch;
@@ -2195,6 +2290,79 @@ void init_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].counter = 0;
 }
 
+int init_audio(char *wanted_device, spc_state_t *state) {
+	int ret = SUCCESS;
+	int err;
+	SDL_AudioSpec desired;
+	SDL_AudioSpec obtained;
+
+	err = SDL_Init(SDL_INIT_AUDIO);
+
+	if (0 != err) {
+		fprintf(stderr, "ERROR: SDL_Init(): %s\n", SDL_GetError());
+		exit(1);
+	}
+
+	SDL_zero(desired);
+
+	desired.freq = 32000;		// SPC Samples are played at 32kHz, I believe.
+	desired.format = AUDIO_S16;	// SPC samples are signed 16-bit samples
+	desired.samples = 512;		// Don't attempt to queue too many samples since we have to interpret in real-time
+	desired.size = 0;		// Will be initialized by SDL_OpenAudio()
+	desired.silence = 0;		// Will be initialized by SDL_OpenAudio()
+	desired.callback = audio_callback;
+	desired.userdata = state;
+
+	err = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
+
+	if (err < 0) {
+		fprintf(stderr, "ERROR: SDL_OpenAudioDevice(): %s\n", SDL_GetError());
+		exit(1);
+	}
+
+	printf("SDL_OpenAudioDevice(): Obtained freq: %d\n", obtained.freq);
+	printf("SDL_OpenAudioDevice(): Obtained format: %d (AUDIO_S16 == %d)\n", obtained.format, AUDIO_S16);
+	printf("SDL_OpenAudioDevice(): Obtained samples: %d\n", obtained.samples);
+
+#if 0
+	int num_drivers;
+	int idx = -1;
+	char *dev_name;
+
+	num_drivers = SDL_GetNumAudioDrivers();
+
+	for (int x = 0; x < num_drivers; x++) {
+		dev_name = SDL_GetAudioDriver(x);
+		printf("Device %d: %s\n", x, dev_name);
+
+		if (wanted_device != NULL && strcmp(wanted_device, dev_name) == 0) {
+			idx = x;
+		}
+	}
+
+	/* User has not specified a device, or it was not found */
+	if (idx == -1) {
+		if (wanted_device != NULL) {
+			fprintf(Stderr, "ERROR: Could not find device %s\n", wanted_device);
+			err = FATAL_ERROR;
+		} else {
+			idx = 0;
+		}
+	}
+
+	if (idx >= 0) {
+		dev_name = SDL_GetAudioDriver(idx);
+		if (SDL_AudioInit(dev_name))
+	}
+#endif
+
+	printf("%s\n", SDL_GetError());
+
+	printf("Current audio driver: %s\n", SDL_GetCurrentAudioDriver());
+
+	return(ret);
+}
+
 int main (int argc, char *argv[])
 {
 	spc_file_t *spc_file;
@@ -2203,9 +2371,16 @@ int main (int argc, char *argv[])
 	int quit = 0;
 	int do_break = 1;
 	int break_addr = -1;
+	char *device = NULL;
 
 	if (argc != 2) {
 		usage(argv[0]);
+		exit(1);
+	}
+
+	/* XXX: Allow audio-less mode. For example, when converting to a wav */
+	if (init_audio(device, &state) != SUCCESS) {
+		fprintf(stderr, "Could not initialize audio\n");
 		exit(1);
 	}
 
@@ -2276,9 +2451,11 @@ int main (int argc, char *argv[])
 				break;
 
 				case 'c': // continue
+				{
 					printf("Continue.\n");
 					do_break = 0;
-					break;
+				}
+				break;
 
 				case 'd': // disasm
 				{
@@ -2351,6 +2528,7 @@ int main (int argc, char *argv[])
 								printf("Instruction tracing is now %s.\n", state.trace & TRACE_CPU_INSTRUCTIONS ? "enabled" : "disabled");
 								printf("Jump/Call tracing is now %s.\n", state.trace & TRACE_CPU_JUMPS ? "enabled" : "disabled");
 								printf("Register read/write tracing is now %s.\n", state.trace & TRACE_REGISTER_WRITES ? "enabled" : "disabled");
+								printf("Timers tracing is now %s.\n", state.trace & TRACE_APU_VOICES ? "enabled" : "disabled");
 								printf("Voices tracing is now %s.\n", state.trace & TRACE_APU_VOICES ? "enabled" : "disabled");
 							}
 							break;
@@ -2374,6 +2552,13 @@ int main (int argc, char *argv[])
 								state.trace ^= TRACE_REGISTER_WRITES;;
 								state.trace ^= TRACE_REGISTER_READS;;
 								printf("Register read/write tracing is now %s.\n", state.trace & TRACE_REGISTER_WRITES ? "enabled" : "disabled");
+							}
+							break;
+
+							case 't' :
+							{
+								state.trace ^= TRACE_COUNTERS;;
+								printf("Timers tracing is now %s.\n", state.trace & TRACE_COUNTERS ? "enabled" : "disabled");
 							}
 							break;
 
