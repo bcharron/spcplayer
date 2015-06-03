@@ -37,6 +37,8 @@
 #include <SDL.h>
 
 #include "opcodes.h"
+#include "dsp_registers.h"
+#include "ctl_registers.h"
 
 #define SPC_HEADER_LEN 33
 #define SPC_TAG_TYPE_OFFSET 0x23
@@ -96,10 +98,11 @@ enum trace_flags {
 	TRACE_REGISTER_WRITES = 0x04,
 	TRACE_REGISTER_READS = 0x08,
 	TRACE_CPU_INSTRUCTIONS = 0x10,
-	TRACE_COUNTERS = 0x20
+	TRACE_COUNTERS = 0x20,
+	TRACE_DSP_OPS = 0x40
 };
 
-#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS | TRACE_COUNTERS)
+#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS | TRACE_COUNTERS | TRACE_DSP_OPS)
 
 typedef union spc_flags_u {
 	struct {
@@ -135,7 +138,9 @@ typedef struct spc_registers_s {
 
 typedef struct spc_timers_s {
 	unsigned long next_timer[3];	// Next cycle number for this timer to increase
-	Uint8 counter[3];		// Increments by one every time next_timer == cycle
+	Uint8 timer[3];			// Increments by one every time next_timer == cycle
+	Uint8 counter[3];		// Increments by one every time timer[x] == divisor[x]
+	Uint8 divisor[3];		// How many times timer[x] must increment before we increment counter
 } spc_timers_t;
 
 typedef struct id_tag_s {
@@ -229,7 +234,8 @@ Uint8 read_byte(spc_state_t *state, Uint16 addr);
 Uint16 read_word(spc_state_t *state, Uint16 addr);
 void write_byte(spc_state_t *state, Uint16 addr, Uint8 val);
 void write_word(spc_state_t *state, Uint16 addr, Uint16 val);
-void set_timer(spc_state_t *state, int timer, Uint8 value);
+void enable_timer(spc_state_t *state, int timer);
+void clear_timer(spc_state_t *state, int timer);
 Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop);
 brr_block_t *decode_brr_block(Uint8 *ptr);
 void kon_voice(spc_state_t *state, int voice_nr);
@@ -395,10 +401,25 @@ void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 		free(path);
 }
 
+/* Read the value of a counter. Doing so resets the counter. */
+Uint8 read_counter(spc_state_t *state, Uint16 addr) {
+	Uint8 val;
+	int counter_nr;
+
+	assert(addr >= SPC_REG_COUNTER0 && addr <= SPC_REG_COUNTER2);
+
+	counter_nr = addr - SPC_REG_COUNTER0;
+
+	val = state->timers.counter[counter_nr];
+	state->timers.counter[counter_nr] = 0;
+
+	return(val);
+}
+
 /* Called when a register is being written to */
 void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
-	if (state->trace & TRACE_REGISTER_WRITES)
-		printf("[DSP] Writing %02X into register %02X\n", val, reg);
+	if (state->trace & (TRACE_REGISTER_WRITES|TRACE_DSP_OPS))
+		printf("[DSP] Writing %02X into register %02X (%s)\n", val, reg, DSP_NAMES[reg % 127]);
 
 	state->dsp_registers[reg] = val;
 
@@ -440,15 +461,17 @@ void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 
 /* Handles a byte being written to $00F0-$00FF (registers) */
 void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
+	assert(addr >= 0xF0 && addr <= 0xFF);
+
 	if (state->trace & TRACE_REGISTER_WRITES)
-		printf("Register write $#%02X into $%04X\n", val, addr);
+		printf("Register read $%04X [%s]\n", addr, CTL_REGISTER_NAMES[addr - 0xF0]);
 
 	switch(addr) {
 		case 0xF0:	// Test?
 			state->ram[addr] = val;
 			break;
 
-		case 0xF1:	// Control, AKA SPCCON1
+		case 0xF1:	// Control, AKA SPCCON1, AKA CONTROL
 			state->ram[addr] = val;
 
 			// Start or stop a timer
@@ -457,14 +480,16 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 
 				// XXX: Handle the case where timer == 0x00, which is in fact 256.
 				if (val & bit)
-					set_timer(state, timer, val);
+					enable_timer(state, timer);
+				else
+					clear_timer(state, timer);
 			}
 
 			// XXX: Handles bits 4-5 (PORT0-3)
 			// XXX: Bit 7 appears to be related to the IPL ROM being ROM or RAM.
 			break;
 
-		case 0xF2:	// Register stuff: Address, AKA SPCDRGA
+		case 0xF2:	// Register address port, AKA SPCDRGA, AKA DSPADDR
 			state->current_dsp_register = val;
 			if (val > 127) {
 				fprintf(stderr, "Trying to access DSP register %d, but maximum is 127.\n", val);
@@ -474,33 +499,35 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 			state->ram[addr] = val;
 			break;
 
-		case 0xF3:	// Register stuff: Data, AKA SPCDDAT
+		case 0xF3:	// Register data port, AKA SPCDDAT, AKA DSPDATA
 			dsp_register_write(state, state->current_dsp_register, val);
 			state->ram[addr] = val;
 			break;
 
-		case 0xF4:	// I/O Ports
-		case 0xF5:
-		case 0xF6:
-		case 0xF7:
+		case 0xF4:	// I/O Ports, AKA CPUIO0
+		case 0xF5:	// CPUIO1
+		case 0xF6:	// CPUIO2
+		case 0xF7:	// CPUIO3
 			state->ram[addr] = val;
 			break;
 
-		case 0xF8:	// Unknown
-		case 0xF9:
+		case 0xF8:	// Unknown, AKA AUXIO4
+		case 0xF9:	// AUXIO5
 			state->ram[addr] = val;
 			break;
 
-		case 0xFA:	// Timers, AKA SPCTMLT
-		case 0xFB:
-		case 0xFC:
+		case 0xFA:	// Timers, AKA SPCTMLT, AKA T1DIV
+		case 0xFB:	// T1DIV
+		case 0xFC:	// T2DIV
+			// XXX: Is the timer reset when the user changes the divider?
 			state->ram[addr] = val;
 			break;
 
-		case 0xFD:	// Counters, AKA SPCTMCT
-		case 0xFE:
-		case 0xFF:
-			state->ram[addr] = val;
+		case 0xFD:	// Counters, AKA SPCTMCT, AKA TxOUT
+		case 0xFE:	// T1OUT
+		case 0xFF:	// T2OUT
+			// I don't think these counters can be written to..
+			// state->ram[addr] = val;
 			break;
 
 		default:
@@ -513,8 +540,10 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 Uint8 register_read(spc_state_t *state, Uint16 addr) {
 	Uint8 val;
 
+	assert(addr >= 0xF0 && addr <= 0xFF);
+
 	if (state->trace & TRACE_REGISTER_READS)
-		printf("Register read $%04X\n", addr);
+		printf("$%04X: Register read $%04X [%s]\n", state->regs->pc, addr, CTL_REGISTER_NAMES[addr - 0xF0]);
 
 	switch(addr) {
 		case 0xF0:	// Test?
@@ -546,17 +575,16 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 			val = state->ram[addr];
 			break;
 
-		case 0xFA:	// Timers
-		case 0xFB:
-		case 0xFC:
+		case 0xFA:	// Timers, AKA SPCTMLT, AKA T1DIV
+		case 0xFB:	// T1DIV
+		case 0xFC:	// T2DIV
 			val = state->ram[addr];
 			break;
 
-		case 0xFD:	// Counters
-		case 0xFE:
-		case 0xFF:
-			val = state->ram[addr];
-			state->ram[addr] = 0;
+		case 0xFD:	// Counters, AKA SPCTMCT, AKA TxOUT
+		case 0xFE:	// T1OUT
+		case 0xFF:	// T2OUT
+			val = read_counter(state, addr);
 			break;
 
 		default:
@@ -706,11 +734,16 @@ int do_beq(spc_state_t *state, Uint8 operand1)
 /* Jump if bit 'bit' of the addr is clear */
 int do_bbc(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 	int cycles;
+	Uint8 val;
 	Uint8 test;
 	
 	test = 1 << bit;
 
-	if (state->ram[src_addr] & test) {
+	val = read_byte(state, src_addr);
+
+	// printf("DO_BBC(%d): Jump if %02X (%04X) & %02X == 0\n", bit, val, src_addr, test);
+
+	if (val & test) {
 		cycles = 5;
 		state->regs->pc += 3;
 	} else {
@@ -754,6 +787,19 @@ void instr_or(spc_state_t *state, Uint8 *operand1, Uint8 operand2)
 
 	state->regs->psw.f.n = (*operand1 & 0x80) > 0;
 	state->regs->psw.f.z = (*operand1 == 0);
+}
+
+Uint8 do_rol(spc_state_t *state, Uint8 val) {
+	Uint8 new_carry = (val & 0x80) > 0;
+
+	val <<= 1;
+	val |= state->regs->psw.f.c;
+
+	state->regs->psw.f.c = new_carry;
+
+	adjust_flags(state, val);
+
+	return(val);
 }
 
 Uint8 do_pop(spc_state_t *state) {
@@ -900,7 +946,7 @@ Uint16 do_add_ya(spc_state_t *state, Uint16 val) {
 	ya = make16(state->regs->y, state->regs->a);
 
 	result = ya + val;
-	printf("Result: %08x\n", result);
+	// printf("Result: %08x\n", result);
 	sResult = ya + val;
 	ret = (Uint16) (result & 0xFFFF);
 
@@ -958,26 +1004,40 @@ void update_counters(spc_state_t *state) {
 		if ((state->ram[SPC_REG_CONTROL] & bit) && (state->cycle >= state->timers.next_timer[timer])) {
 			state->timers.next_timer[timer] = state->cycle + TIMER_CYCLES[timer];
 
-			state->timers.counter[timer]++;
+			state->timers.timer[timer]++;
 
-			// XXX: I *think* this should correctly handle the case where the desired timer = 0x00
-			if (state->timers.counter[timer] == state->ram[SPC_REG_TIMER0 + timer]) {
-				// Only the bottom 4 bits of the counter are available.
-				state->ram[SPC_REG_COUNTER0 + timer] = (state->ram[SPC_REG_COUNTER0 + timer] + 1) % 16;
-
-				// Internal counter resets when the timer hits.
-				state->timers.counter[timer] = 0;
+			/* We only reach this part when timer increments, and
+			 * counter is initialized to 0x00, so it should be safe
+			 * for the 0x00 edge case (divisor is 256)
+			 */
+			if (state->timers.timer[timer] == state->timers.divisor[timer]) {
+				// This is a 16 bit counter.
+				state->timers.counter[timer] = (state->timers.counter[timer] + 1) % 16;
 
 				if (state->trace & TRACE_COUNTERS)
-					printf("TIMER %d HIT: %d\n", timer, state->ram[SPC_REG_COUNTER0 + timer]);
+					printf("TIMER %d HIT (divisor is %d)\n", timer, state->timers.divisor[timer]);
 			}
 		}
 	}
 }
 
-void set_timer(spc_state_t *state, int timer, Uint8 value) {
+/* Disabling a timer resets its counter and reloads the diviser */
+void clear_timer(spc_state_t *state, int timer) {
+	state->timers.next_timer[timer] = 0;
+	state->timers.counter[timer] = 0;
+	state->timers.timer[timer] = 0;
+	state->timers.divisor[timer] = state->ram[SPC_REG_TIMER0 + timer];
+}
+
+/* Enabling a timer through 0xF1 (CONTROL) */
+void enable_timer(spc_state_t *state, int timer) {
 	state->timers.next_timer[timer] = state->cycle + TIMER_CYCLES[timer];
-	state->timers.counter[timer] = 0;	// Internal counter, increased every clock
+	state->timers.counter[timer] = 0;	// Internal counter, increased every time timer[x] == divisor[x]
+	state->timers.timer[timer] = 0;		// Internal counter, increased every clock
+
+	// Reload the divisor
+	state->timers.divisor[timer] = state->ram[SPC_REG_TIMER0 + timer];
+	// state->timers.divisor[timer] = value;
 }
 
 int execute_instruction(spc_state_t *state, Uint16 addr) {
@@ -1018,6 +1078,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0x08: // OR A, #$xx
+			state->regs->a |= operand1;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
 		case 0x0B: // ASL $xx
 			dp_addr = get_direct_page_addr(state, operand1);
 			state->regs->psw.f.c = (state->ram[dp_addr] & 0x80) > 0;
@@ -1039,7 +1105,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
-		case 0x13: // BBC0 $00xx, $yy
+		case 0x13: // BBC0 $dp, $yy
+			// XXX: BBC0 is 0x13?
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 0, dp_addr, operand2);
 			pc_adjusted = 1;
@@ -1065,6 +1132,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a &= val;
 			cycles = 2;
+			break;
+
+		case 0x2B: // ROLZ $xx
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val = do_rol(state, val);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0x2D: // PUSH A
@@ -1115,6 +1190,25 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->a ^= val;
 			adjust_flags(state, state->regs->a);
 			cycles = 3;
+			break;
+
+		case 0x48: // EOR A, $#imm
+			state->regs->a ^= operand1;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
+		case 0x4B: // LSRZ $xx
+			val = get_direct_page_addr(state, operand1);
+			state->regs->psw.f.c = val & 0x01;
+			val >>= 1;
+			adjust_flags(state, val);
+			cycles = 2;
+			break;
+
+		case 0x4D: // PUSH X
+			do_push(state, state->regs->x);
+			cycles = 4;
 			break;
 
 		case 0x50: // BVC
@@ -1215,6 +1309,15 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0x7C: // ROR A
+			val  = state->regs->a & 0x01;
+			state->regs->a >>= 1;
+			state->regs->a |= ((Uint8) state->regs->psw.f.c << 7);
+			state->regs->psw.f.c = val;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
 		case 0x7D: // MOV A, X
 			state->regs->a = state->regs->x;
 			adjust_flags(state, state->regs->a);
@@ -1260,6 +1363,16 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x95: // ADC A, $xxxx + X
+			abs_addr = make16(operand2, operand1);
+			abs_addr += state->regs->x;
+
+			val = read_byte(state, abs_addr);
+			
+			state->regs->a = do_adc(state, state->regs->a, val);
+			cycles = 5;
+			break;
+
 		case 0x96: // ADC A, $xxxx + Y
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->y;
@@ -1282,10 +1395,32 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x9E: // DIV YA, X
+		{
+			// XXX: Not sure at all about this one.
+			Uint16 ya = make16(state->regs->y, state->regs->a);
+
+			state->regs->a = ya / state->regs->x;
+			state->regs->y = ya % state->regs->x;
+
+			// XXX: Update flags.. from A?
+			adjust_flags(state, state->regs->a);
+
+			// XXX: How to update the V and H flags?
+
+			cycles = 12;
+		}
+		break;
+
 		case 0x9F: // XCN A
 			state->regs->a = ((state->regs->a << 4) & 0xF0) | (state->regs->a >> 4);
 			adjust_flags(state, state->regs->a);
 			cycles = 5;
+			break;
+
+		case 0xA8: // SBC A, $#imm
+			state->regs->a = do_sbc(state, state->regs->a, operand1);
+			cycles = 2;
 			break;
 
 		case 0xAB: // INC $xx
@@ -1331,6 +1466,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			abs_addr = make16(operand2, operand1);
 			write_byte(state, abs_addr, state->regs->a);
 			cycles = 5;
+			break;
+
+		case 0xC8: // CMP X, #$xx
+			do_cmp(state, state->regs->x, operand1);
+			cycles = 2;
 			break;
 
 		case 0xCB: // MOV $xx, Y
@@ -1407,11 +1547,34 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0xDE: // CBNE $xx + X, $r
-			dp_addr = get_direct_page_addr(state, operand2);
+			// One of the few instructions where operand2 is 'r'
+			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
 			val = read_byte(state, dp_addr);
+			Uint8 old_flags = state->regs->psw.val;
 			do_cmp(state, state->regs->a, val);
-			branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
+
+			if (state->regs->psw.f.z) {
+				cycles = 6;
+				state->regs->pc += 3;
+			} else {
+				state->regs->pc += (Sint8) operand2 + 3;
+				cycles = 8;
+
+				if (state->trace & TRACE_CPU_JUMPS)
+					printf("Jumping to 0x%04X\n", state->regs->pc);
+			}
+
+			/*
+			// XXX: This will only increment PC by 2, it should be incremented by 3.
+			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand2);
+
+			// Account for missing +1 in branch_if_clear.
+			state->regs->pc++;
+			*/
+
+			// Restore the flags because CBNE should not modify them.
+			state->regs->psw.val = old_flags;
 			pc_adjusted = 1;
 			cycles += 2;
 			break;
@@ -1493,7 +1656,9 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xF2: // CLR7 $11
 			dp_addr = get_direct_page_addr(state, operand1);
-			state->ram[dp_addr] &= (~ 0x80);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x80);
+			write_byte(state, dp_addr, val);
 			cycles = 4;
 			break;
 
@@ -1534,7 +1699,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			adjust_flags(state, state->regs->y);
 			cycles = 4;
 			break;
-			
+
+		case 0xFC: // INC Y
+			state->regs->y++;
+			adjust_flags(state, state->regs->y);
+			cycles = 2;
+			break;
+
 		case 0xFD: // MOV Y, A
 			state->regs->y = state->regs->a;
 			adjust_flags(state, state->regs->y);
@@ -1644,6 +1815,8 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 	printf("%s", str);
 
 	switch(opcode) {
+		// These are inversed compared to other branch opcodes, and
+		// they need to be incremented by 3 rather than 2.
 		case 0x13: // BBC0
 		case 0x33: // BBC1
 		case 0x53: // BBC2
@@ -1652,6 +1825,7 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		case 0xB3: // BBC5
 		case 0xD3: // BBC6
 		case 0xF3: // BBC7
+		case 0xDE: // CBNE
 		{
 			printf(" ($%04X)", pc + 3 + (Sint8) ram[pc + 2]);
 		}
@@ -1665,7 +1839,6 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		case 0x90: // BCC
 		case 0xB0: // BCS
 		case 0xD0: // BNE
-		case 0xDE: // CBNE
 		case 0xF0: // BEQ
 		case 0xFE: // DBNZ
 		{
@@ -2133,8 +2306,10 @@ void show_menu(void) {
 	printf("sd         Show DSP Registers\n");
 	printf("sr         Show CPU Registers\n");
 	printf("ta         Enable/disable ALL tracing \n");
+	printf("td         Enable/disable DSP Operations tracing \n");
 	printf("ti         Enable/disable instruction tracing \n");
 	printf("tj         Enable/disable jump/call tracing \n");
+	printf("tt         Enable/disable timer/counters tracing\n");
 	printf("tr         Enable/disable register read/write tracing \n");
 	printf("tv         Enable/disable voice-register tracing\n");
 	printf("w <nr>     Write sample <nr> to disk\n");
@@ -2400,9 +2575,14 @@ int main (int argc, char *argv[])
 	state.current_dsp_register = state.ram[0xF2];
 
 	/* Initialize timers. Assume they are enabled */
-	set_timer(&state, 0, state.ram[SPC_REG_COUNTER0]);
-	set_timer(&state, 1, state.ram[SPC_REG_COUNTER1]);
-	set_timer(&state, 2, state.ram[SPC_REG_COUNTER2]);
+	// XXX: They might be disabled. Just initialize based on the state in CONTROL..
+	state.timers.counter[0] = state.ram[SPC_REG_COUNTER0];
+	state.timers.counter[1] = state.ram[SPC_REG_COUNTER1];
+	state.timers.counter[2] = state.ram[SPC_REG_COUNTER2];
+
+	enable_timer(&state, 0);
+	enable_timer(&state, 1);
+	enable_timer(&state, 2);
 
 	// XXX: Voices enable should come from KON on startup?
 	for (int x = 0; x < 8; x++)
@@ -2530,6 +2710,13 @@ int main (int argc, char *argv[])
 								printf("Register read/write tracing is now %s.\n", state.trace & TRACE_REGISTER_WRITES ? "enabled" : "disabled");
 								printf("Timers tracing is now %s.\n", state.trace & TRACE_APU_VOICES ? "enabled" : "disabled");
 								printf("Voices tracing is now %s.\n", state.trace & TRACE_APU_VOICES ? "enabled" : "disabled");
+							}
+							break;
+
+							case 'd' :
+							{
+								state.trace ^= TRACE_DSP_OPS;
+								printf("DSP Operations tracing is now %s.\n", state.trace & TRACE_DSP_OPS ? "enabled" : "disabled");
 							}
 							break;
 
