@@ -1460,6 +1460,22 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0xBA: // MOVW YA, $dp
+			dp_addr = get_direct_page_addr(state, operand1);
+			state->regs->a = read_byte(state, dp_addr);
+			state->regs->y = read_byte(state, dp_addr + 1);
+
+			// Manually adjusting flags because adjust_flags()
+			// doesn't know how to handle "YA".
+			if (state->regs->y == 0 && state->regs->a == 0)
+				state->regs->psw.f.z = 1;
+
+			if ((state->regs->y & 0x80) > 0)
+				state->regs->psw.f.n = 1;
+
+			cycles = 4;
+			break;
+
 		case 0xC4: // MOVZ $xx, A
 			dp_addr = get_direct_page_addr(state, operand1);
 			write_byte(state, dp_addr, state->regs->a);
