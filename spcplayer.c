@@ -1405,6 +1405,23 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x9B: // DEC $dp+X
+		{
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+
+			val = read_byte(state, dp_addr);
+
+			val--;
+
+			adjust_flags(state, val);
+
+			write_byte(state, dp_addr, val);
+
+			cycles = 5;
+		}
+		break;
+
 		case 0x9E: // DIV YA, X
 		{
 			// XXX: Not sure at all about this one.

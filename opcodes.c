@@ -136,7 +136,7 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "DEC A", 0x9C, 1 },
 	{ "DEC X", 0x1D, 1 },
 	{ "DEC Y", 0xDC, 1 },
-	{ "DEC $%02X,X", 0x9B, 2 },
+	{ "DEC $%02X+X", 0x9B, 2 },
 	{ "DEC $%02X", 0x8C, 3 },
 	{ "DECZ $%02X", 0x8B, 2 },
 	{ "INC A", 0xBC, 1 },
