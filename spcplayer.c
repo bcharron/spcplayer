@@ -35,6 +35,7 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <SDL.h>
+#include <signal.h>
 
 #include "opcodes.h"
 #include "dsp_registers.h"
@@ -185,6 +186,8 @@ typedef struct spc_state_s {
 	unsigned long cycle;
 	spc_voice_t voices[8];
 	int trace;
+	int profiling;
+	int *profile_info;
 } spc_state_t;
 
 /* Gaussian Interpolation table - straight from no$sns specs */
@@ -222,6 +225,9 @@ int INTERP_TABLE[] = {
 	0x502, 0x503, 0x504, 0x506, 0x507, 0x508, 0x50A, 0x50B, 0x50C, 0x50D, 0x50E, 0x50F, 0x510, 0x511, 0x511, 0x512,
 	0x513, 0x514, 0x514, 0x515, 0x516, 0x516, 0x517, 0x517, 0x517, 0x518, 0x518, 0x518, 0x518, 0x518, 0x519, 0x519
 };
+
+/* Global variables */
+volatile int g_do_break = 1;
 
 int dump_instruction(Uint16 pc, Uint8 *ram);
 void dump_registers(spc_registers_t *registers);
@@ -1739,7 +1745,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 int execute_next(spc_state_t *state) {
 
+	if (state->profiling) {
+		state->profile_info[state->regs->pc]++;
+	}
+
 	execute_instruction(state, state->regs->pc);
+
 
 	return(0);
 }
@@ -2303,8 +2314,10 @@ void show_menu(void) {
 	printf("d [<addr>] Disassemble at $<addr>, or $pc if addr is not supplied (ie, \"d abcd\")\n");
 	printf("h          Shows this help\n");
 	printf("n          Execute next instruction\n");
+	printf("p          Enable/disable profiling\n");
 	printf("sd         Show DSP Registers\n");
 	printf("sr         Show CPU Registers\n");
+	printf("sr         Show profiling counters\n");
 	printf("ta         Enable/disable ALL tracing \n");
 	printf("td         Enable/disable DSP Operations tracing \n");
 	printf("ti         Enable/disable instruction tracing \n");
@@ -2538,15 +2551,91 @@ int init_audio(char *wanted_device, spc_state_t *state) {
 	return(ret);
 }
 
+typedef struct prof_struct {
+	Uint16 addr;
+	int hits;
+} prof_t;
+
+int compare_profs(const void *a, const void *b) {
+	const prof_t *pa, *pb;
+	int ret;
+
+	pa = a;
+	pb = b;
+
+	if (pa->hits < pb->hits)
+		ret = -1;
+	else if (pa->hits == pb->hits) {
+		/* Identical counts are ordered by their address, which is unique */
+		if (pa->addr < pb->addr)
+			ret = -1;
+		else
+			ret = 1;
+	} else
+		ret = 1;
+
+	return(ret);
+}
+
+void dump_profiling(spc_state_t *state) {
+	int x;
+	prof_t *tmp;
+
+	if (state->profile_info) {
+		tmp = malloc(sizeof(prof_t) * 65536);
+
+		for (x = 0; x < 65536; x++) {
+			tmp[x].addr = x;
+			tmp[x].hits = state->profile_info[x];
+		}
+
+		qsort(tmp, 65536, sizeof(prof_t), compare_profs);
+		for (x = 0; x < 65536; x++) {
+			if (tmp[x].hits > 0) {
+				printf("%-10d ", tmp[x].hits);
+				dump_instruction(tmp[x].addr, state->ram);
+			}
+		}
+
+		free(tmp);
+	} else {
+		printf("Profiling not enabled.\n");
+	}
+
+}
+
+void enable_profiling(spc_state_t *state) {
+	int x;
+
+	if (! state->profile_info) {
+		state->profile_info = malloc (sizeof(int) * 65536);
+
+		for (x = 0; x < 65536; x++) {
+			state->profile_info[x] = 0;
+		}
+	}
+}
+
+void disable_profiling(spc_state_t *state) {
+	if (state->profile_info) {
+		free(state->profile_info);
+		state->profile_info = NULL;
+	}
+}
+
+void handle_sigint(int sig) {
+	g_do_break = 1;
+}
+
 int main (int argc, char *argv[])
 {
 	spc_file_t *spc_file;
 	spc_state_t state;
 	char input[200];
 	int quit = 0;
-	int do_break = 1;
 	int break_addr = -1;
 	char *device = NULL;
+	sig_t err;
 
 	if (argc != 2) {
 		usage(argv[0]);
@@ -2570,6 +2659,8 @@ int main (int argc, char *argv[])
 	state.cycle = 0;
 	state.dsp_registers = spc_file->dsp_registers;
 	state.trace = 0;
+	state.profiling = 0;
+	state.profile_info = NULL;
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -2592,14 +2683,20 @@ int main (int argc, char *argv[])
 
 	// decode_brr_block(&state.ram[0x1000]);
 
+	err = signal(SIGINT, handle_sigint);
+	if (SIG_ERR == err) {
+		perror("signal(SIGINT)");
+		exit(1);
+	}
+
 	while (! quit) {
 		if (state.regs->pc == break_addr) {
 			printf("Reached breakpoint %04X\n", break_addr);
-			do_break = 1;
+			g_do_break = 1;
 		}
 
 		// Should we break after every instruction?
-		if (do_break) {
+		if (g_do_break) {
 			// dump_registers(state.regs);
 			dump_instruction(state.regs->pc, state.ram);
 
@@ -2633,7 +2730,7 @@ int main (int argc, char *argv[])
 				case 'c': // continue
 				{
 					printf("Continue.\n");
-					do_break = 0;
+					g_do_break = 0;
 				}
 				break;
 
@@ -2666,6 +2763,17 @@ int main (int argc, char *argv[])
 					execute_next(&state);
 					break;
 
+				case 'p':
+					state.profiling = !state.profiling;
+					printf("Profiling is now %s.\n", state.profiling ? "enabled" : "disabled");
+
+					if (state.profiling)
+						enable_profiling(&state);
+					else
+						disable_profiling(&state);
+
+					break;
+
 				case 'q':
 					quit = 1;
 					break;
@@ -2679,6 +2787,10 @@ int main (int argc, char *argv[])
 						switch (input[1]) {
 							case 'd':
 								dump_dsp(&state);
+								break;
+
+							case 'p':
+								dump_profiling(&state);
 								break;
 
 							case 'r':
@@ -2808,6 +2920,10 @@ int main (int argc, char *argv[])
 
 			execute_next(&state);
 			update_counters(&state);
+
+			if ((state.cycle % (2048 * 1000)) <= 6) {
+				printf("Seconds elapsed: %0.1f\n", (float) state.cycle / (2048 * 1000));
+			}
 		}
 	}
 
