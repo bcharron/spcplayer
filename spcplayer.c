@@ -1077,7 +1077,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
-		case 0x04: // ORZ A, $E8
+		case 0x04: // ORZ A, $dp
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a |= val;
 			adjust_flags(state, state->regs->a);
@@ -1336,10 +1336,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0x84: // ADC A, $dp
-			dp_addr = get_direct_page_addr(state, operand2);
-
+			dp_addr = get_direct_page_addr(state, operand1);
 			val = read_byte(state, dp_addr);
-
 			state->regs->a = do_adc(state, state->regs->a, val);
 			cycles = 3;
 			break;
@@ -2627,6 +2625,19 @@ void handle_sigint(int sig) {
 	g_do_break = 1;
 }
 
+/* Returns true if the code is looping on a timer status */
+int is_waiting_on_timer(Uint8 *mem) {
+	int ret = 0;
+
+	unsigned char pattern1[5] = { 0xEC, 0xFD, 0x00, 0xF0, 0xFB }; // MOV Y,$00FD; BEQ $00FB
+
+	if (memcmp(mem, pattern1, 5) == 0) {
+		ret = SPC_REG_TIMER0;
+	}
+
+	return(ret);
+}
+
 int main (int argc, char *argv[])
 {
 	spc_file_t *spc_file;
@@ -2917,6 +2928,12 @@ int main (int argc, char *argv[])
 			// dump_registers(state.regs);
 			if (state.trace & TRACE_CPU_INSTRUCTIONS)
 				dump_instruction(state.regs->pc, state.ram);
+
+			/*
+			if (is_waiting_on_timer(&state.ram[state.regs->pc])) {
+				printf("$%04X Waiting on timer to expire\n", state.regs->pc);
+			}
+			*/
 
 			execute_next(&state);
 			update_counters(&state);
