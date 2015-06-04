@@ -1330,6 +1330,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x7E: // CMP Y, $dp
+			val = get_direct_page_byte(state, operand1);
+			do_cmp(state, state->regs->a, val);
+			cycles = 3;
+			break;
+
 		case 0x80: // SETC
 			state->regs->psw.f.c = 1;
 			cycles = 2;
