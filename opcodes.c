@@ -142,7 +142,7 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "INC A", 0xBC, 1 },
 	{ "INC X", 0x3D, 1 },
 	{ "INC Y", 0xFC, 1 },
-	{ "INC $%02X,X", 0xBB, 2 },
+	{ "INC $%02X+X", 0xBB, 2 },
 	{ "INC $%02X", 0xAC, 3 },
 	{ "INCZ $%02X", 0xAB, 2 },
 	{ "MOV X,A", 0x5D, 1 },

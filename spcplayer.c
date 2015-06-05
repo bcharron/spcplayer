@@ -1499,6 +1499,22 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xBB: // INC $dp+X
+		{
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+
+			val = read_byte(state, dp_addr);
+
+			val++;
+
+			adjust_flags(state, val);
+
+			write_byte(state, dp_addr, val);
+
+			cycles = 5;
+		}
+
 		case 0xC4: // MOVZ $xx, A
 			dp_addr = get_direct_page_addr(state, operand1);
 			write_byte(state, dp_addr, state->regs->a);
