@@ -1135,6 +1135,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x20: // CLRP
+			state->regs->psw.f.p = 0;
+			cycles = 2;
+			break;
+
 		case 0x24: // ANDZ A, $xx
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a &= val;
@@ -1190,6 +1195,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			do_call(state, operand1, operand2);
 			cycles = 8;
 			pc_adjusted = 1;
+			break;
+
+		case 0x40: // SETP
+			state->regs->psw.f.p = 1;
+			cycles = 2;
 			break;
 
 		case 0x44: // EORZ A, $xx
