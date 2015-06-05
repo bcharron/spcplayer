@@ -670,6 +670,7 @@ Uint8 get_dsp_voice(spc_state_t *state, int voice_nr, Uint8 reg) {
 }
 
 /* Perform the branch if flag 'flag' is set */
+// XXX: Cycles appear to be wrong for flag-only checks like BMI/BPL/etc. Should be 2/4, not 4/6.
 int branch_if_flag(spc_state_t *state, int flag, Uint8 operand1) {
 	int cycles;
 
@@ -1284,6 +1285,25 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x6E: // DBNZ $dp, $rr   Decrement and Branch if Not Zero
+			dp_addr = get_direct_page_addr(state, operand1);
+
+			val = read_byte(state, dp_addr);
+
+			val--;
+
+			// Flags are not adjusted for this operation, apparently.
+
+			write_byte(state, dp_addr, val);
+
+			cycles = branch_if_flag_set(state, val, operand2);
+			cycles++;
+
+			// branch_if_flag* only adds 2
+			state->regs->pc++;
+			pc_adjusted = 1;
+			break;
+
 		case 0x6F: // RET
 			do_ret(state);
 			cycles = 5;
@@ -1672,7 +1692,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
-		case 0xE7: // MOV A,[$dp+X]
+		case 0xE7: // MOV A, [$dp+X]
 		{
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
@@ -1791,8 +1811,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xFE: // DBNZ Y, $xx
 			state->regs->y--;
-			adjust_flags(state, state->regs->y);
-			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
+			// Flags are not adjusted for this operation.
+			cycles = branch_if_flag_set(state, state->regs->y, operand1);
 			pc_adjusted = 1;
 			break;
 
@@ -1883,7 +1903,18 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 
 		case 3:
 		{
-			snprintf(str, sizeof(str), op->name, ram[pc + 2], ram[pc + 1]);
+			switch(opcode) {
+				// These opcodes need to be displayed "backwards"
+				case 0x2E: // CBNE $dp, rr
+				case 0x6E: // DBNZ $dp, rr
+				case 0xDE: // CBNE $dp+X, rr
+					snprintf(str, sizeof(str), op->name, ram[pc + 1], ram[pc + 2]);
+					break;
+
+				default:
+					snprintf(str, sizeof(str), op->name, ram[pc + 2], ram[pc + 1]);
+					break;
+			}
 			break;
 		}
 
@@ -1900,14 +1931,16 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		// These are inversed compared to other branch opcodes, and
 		// they need to be incremented by 3 rather than 2.
 		case 0x13: // BBC0
+		case 0x2E: // CBNE $dp, $rr
 		case 0x33: // BBC1
 		case 0x53: // BBC2
+		case 0x6E: // DBNZ $dp, $rr
 		case 0x73: // BBC3
 		case 0x93: // BBC4
 		case 0xB3: // BBC5
 		case 0xD3: // BBC6
 		case 0xF3: // BBC7
-		case 0xDE: // CBNE
+		case 0xDE: // CBNE $dp+X, $rr
 		{
 			printf(" ($%04X)", pc + 3 + (Sint8) ram[pc + 2]);
 		}
@@ -1925,7 +1958,7 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 		case 0xFE: // DBNZ
 		{
 			// +2 because the operands have been read when the CPU gets ready to jump
-			printf(" ($%04X)", pc + (Sint8) ram[pc + 1] + 2);
+			printf(" ($%04X)", pc + 2 + (Sint8) ram[pc + 1]);
 		}
 		break;
 

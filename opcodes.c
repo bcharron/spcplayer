@@ -104,7 +104,7 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "CBNE $%02X+X,$%02X", 0xDE, 3 },
 	{ "CBNE $%02X,$%02X", 0x2E, 3 },
 	{ "DBNZ Y,$%02X", 0xFE, 2 },
-	{ "DBNZ $%02X,$%02X", 0x6E, 3 },
+	{ "DBNZ $%02X, #$%02X", 0x6E, 3 },
 	{ "DAA YA", 0xDF, 1 },
 	{ "DAS YA", 0xBE, 1 },
 	{ "NOT1 $%02X", 0xEA, 3 },
