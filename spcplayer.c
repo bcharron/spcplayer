@@ -1672,6 +1672,24 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0xE7: // MOV A,[$dp+X]
+		{
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+
+			Uint8 l = read_byte(state, dp_addr);
+			Uint8 h = read_byte(state, dp_addr + 1);
+
+			abs_addr = make16(h, l);
+
+			state->regs->a = read_byte(state, abs_addr);
+
+			adjust_flags(state, state->regs->a);
+
+			cycles = 6;
+		}
+		break;
+
 		case 0xE8: // MOV A, #$xx
 			state->regs->a = operand1;
 			adjust_flags(state, state->regs->a);
