@@ -1655,6 +1655,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;	// XXX: One source says 4, another 5..
 			break;
 
+		case 0xDC: // DEC Y
+			state->regs->y--;
+			adjust_flags(state, state->regs->y);
+			cycles = 2;
+			break;
+
 		case 0xDD: // MOV A, Y
 			state->regs->a = state->regs->y;
 			adjust_flags(state, state->regs->a);
