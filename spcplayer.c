@@ -1143,7 +1143,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x24: // ANDZ A, $xx
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a &= val;
+			adjust_flags(state, state->regs->a);
 			cycles = 2;
+			break;
+
+		case 0x28: // AND A, #$xx
+			state->regs->a &= operand1;
+			adjust_flags(state, state->regs->a);
+			cycles = 3;
 			break;
 
 		case 0x2B: // ROLZ $xx
