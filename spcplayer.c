@@ -1091,6 +1091,25 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x09: // OR $dp1, $dp2 - "09 ds dd"
+		{
+			// The destination is operand 2, the source is operand 1
+			Uint16 src_addr = get_direct_page_addr(state, operand1);
+			Uint16 dst_addr = get_direct_page_addr(state, operand2);
+
+			Uint8 src_val = read_byte(state, src_addr);
+			Uint8 dst_val = read_byte(state, dst_addr);
+
+			dst_val |= src_val;
+
+			write_byte(state, dst_addr, dst_val);
+
+			adjust_flags(state, dst_val);
+
+			cycles = 6;
+		}
+		break;
+
 		case 0x0B: // ASL $xx
 			dp_addr = get_direct_page_addr(state, operand1);
 			state->regs->psw.f.c = (state->ram[dp_addr] & 0x80) > 0;
