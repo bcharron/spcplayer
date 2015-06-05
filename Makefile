@@ -16,6 +16,10 @@ spcdisasm.o: spcdisasm.c
 
 spcdisasm: spcdisasm.o opcodes.o
 
+profile: spcplayer
+	sample -wait -file spcplayer.profile.txt spcplayer &
+	echo c | ./spcplayer srb-02.spc
+
 clean:
 	rm -f spcplayer spcdisasm *.o
 
