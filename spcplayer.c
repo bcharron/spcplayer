@@ -2618,14 +2618,18 @@ void kon_voice(spc_state_t *state, int voice_nr) {
 	Uint8 *block_ptr = &state->ram[state->voices[voice_nr].cur_addr];
 
 	state->voices[voice_nr].block = decode_brr_block(block_ptr);
+
+	assert(state->voices[voice_nr].block != NULL);
 }
 
 /* Called when a voice is Keyed-OFF ("KOFF") */
 void koff_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].enabled = 0;
 
-	if (NULL != state->voices[voice_nr].block)
+	if (NULL != state->voices[voice_nr].block) {
 		free(state->voices[voice_nr].block);
+		state->voices[voice_nr].block = NULL;
+	}
 }
 
 /* Initialize a voice to a default state at power-up */
