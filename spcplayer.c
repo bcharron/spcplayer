@@ -321,25 +321,6 @@ opcode_t *convert_opcode_table(void) {
 	return(table);
 }
 
-// XXX: This is dumb. We need a table sorted by opcode rather than mnemonic..
-/*
-opcode_t *get_opcode_by_value(Uint8 opcode) {
-	opcode_t *ret = NULL;
-	int x;
-
-	for (x = 0; x < OPCODE_TABLE_LEN; x++) {
-		if (OPCODE_TABLE[x].opcode == opcode) {
-			ret = &OPCODE_TABLE[x];
-			break;
-		}
-	}
-
-	assert(ret != NULL);
-
-	return(ret);
-}
-*/
-
 opcode_t *get_opcode_by_value(Uint8 opcode) {
 	return(&g_opcode_table[opcode]);
 }
