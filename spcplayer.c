@@ -228,6 +228,7 @@ int INTERP_TABLE[] = {
 
 /* Global variables */
 volatile int g_do_break = 1;
+opcode_t *g_opcode_table = NULL;
 
 int dump_instruction(Uint16 pc, Uint8 *ram);
 void dump_registers(spc_registers_t *registers);
@@ -300,8 +301,28 @@ uint8_t get_high(uint16_t word)
 	return(high);
 }
 
+opcode_t *convert_opcode_table(void) {
+	opcode_t *table;
+
+	table = malloc(sizeof(opcode_t) * OPCODE_TABLE_LEN);
+	if (NULL == table) {
+		perror("convert_opcode_table() -> malloc()");
+		exit(1);
+	}
+
+	for (int x = 0; x < OPCODE_TABLE_LEN; x++) {
+		int op = OPCODE_TABLE[x].opcode;
+
+		table[op].opcode = OPCODE_TABLE[x].opcode;
+		table[op].name = OPCODE_TABLE[x].name;
+		table[op].len = OPCODE_TABLE[x].len;
+	}
+
+	return(table);
+}
 
 // XXX: This is dumb. We need a table sorted by opcode rather than mnemonic..
+/*
 opcode_t *get_opcode_by_value(Uint8 opcode) {
 	opcode_t *ret = NULL;
 	int x;
@@ -316,6 +337,11 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 	assert(ret != NULL);
 
 	return(ret);
+}
+*/
+
+opcode_t *get_opcode_by_value(Uint8 opcode) {
+	return(&g_opcode_table[opcode]);
 }
 
 /*
@@ -2829,6 +2855,8 @@ int main (int argc, char *argv[])
 		fprintf(stderr, "Could not initialize audio\n");
 		exit(1);
 	}
+
+	g_opcode_table = convert_opcode_table();
 
 	spc_file = read_spc_file(argv[1]);
 	if (spc_file == NULL) {
