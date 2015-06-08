@@ -4,9 +4,13 @@ LDFLAGS=`sdl2-config --libs`
 # For OSX
 #LDFLAGS=`/opt/local/bin/sdl-config --libs`
 
-all: spcplayer spcdisasm
+all: spcplayer spcdisasm buftest
 
-spcplayer: spcplayer.o opcodes.o
+spcplayer: spcplayer.o opcodes.o buf.o
+
+buf.o: buf.c buf.h
+
+buftest: buf.o
 
 opcodes.o: opcodes.c opcodes.h
 
