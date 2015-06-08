@@ -58,7 +58,6 @@ int buffer_add_one(buf_t *buf, Sint16 sample) {
 	int ret;
 
 	if (! buffer_is_full(buf)) {
-		printf("Adding to position tail = %d\n", buf->tail);
 		buf->data[buf->tail++] = sample;
 		buf->tail %= buf->size;
 		buf->len++;
@@ -84,7 +83,6 @@ Sint16 buffer_get_one(buf_t *buf) {
 
 	assert(buffer_get_len(buf) > 0);
 
-	printf("head: %d\n", buf->head);
 	val = buf->data[buf->head++];
 	buf->head %= buf->size;
 	buf->len--;
