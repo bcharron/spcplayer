@@ -36,10 +36,21 @@
 #include <arpa/inet.h>
 #include <SDL.h>
 #include <signal.h>
+#include <unistd.h>
 
 #include "opcodes.h"
 #include "dsp_registers.h"
 #include "ctl_registers.h"
+#include "buf.h"
+
+// How many cycles between audio updates
+#define AUDIO_SAMPLE_PERIOD ((2048 * 1000) / 32000)
+
+// How many samples to fill in each pass
+#define AUDIO_BUFFER_SIZE 16000
+
+// Don't redefine this, it's just to increase readability :)
+#define SPC_NB_VOICES 8
 
 #define SPC_HEADER_LEN 33
 #define SPC_TAG_TYPE_OFFSET 0x23
@@ -78,6 +89,7 @@
 #define SPC_DSP_KON 0x4C
 #define SPC_DSP_KOFF 0x5C
 #define SPC_DSP_DIR 0x5D
+#define SPC_DSP_ENDX 0x7C
 
 // Per-voice registers
 #define SPC_DSP_VxPITCHL 0x02
@@ -172,7 +184,7 @@ typedef struct spc_voice_s {
 	int next_sample;	// Number of the next sample to play in the block
 	int looping;		// Whether it's in looping mode
 	brr_block_t *block;	// Current block
-	int step;		// Current step, based on pitch
+	// int step;		// Current step, based on pitch
 	int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
 	Uint16 prev_brr_samples[4];	// Used for interpolation
 } spc_voice_t;
@@ -188,6 +200,9 @@ typedef struct spc_state_s {
 	int trace;
 	int profiling;
 	int *profile_info;
+	buf_t *audio_buf;
+	FILE *out_file;
+	int audio_dev;
 } spc_state_t;
 
 /* Gaussian Interpolation table - straight from no$sns specs */
@@ -465,6 +480,11 @@ void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 				}
 			}
 		}
+		break;
+
+		/* Writing to ENDx resets its value */
+		case SPC_DSP_ENDX:
+			state->ram[SPC_DSP_ENDX] = 0;
 		break;
 
 		default:
@@ -2516,16 +2536,28 @@ int get_voice_pitch(spc_state_t *state, int voice_nr) {
 }
 
 void audio_callback(void *userdata, Uint8 * stream, int len) {
-	int voice_nr;
 	spc_state_t *state = (spc_state_t *) userdata;
-	Sint16 sample;
+	int available;
 
-	printf("audio_callback(len=%d)\n", len);
+	// printf("audio_callback(len=%d)\n", len);
 
-	for (voice_nr = 0; voice_nr < 8; voice_nr++) {
-		if (state->voices[voice_nr].enabled) {
-			sample = get_next_sample(state, voice_nr);
-		}
+	available = buffer_get_len(state->audio_buf);
+
+	if (len > available) {
+		printf("audio_callback(): Not enough data to fill buffer!\n");
+		len = available;
+	}
+
+	// printf("Filling SDL audio buffer with %d bytes\n", len);
+
+	while (len >= 2) {
+		Sint16 sample = buffer_get_one(state->audio_buf);
+		Uint8 *b = (Uint8 *) &sample;
+
+		// XXX: Not sure about order or whether this is the best way to go.
+		*(stream++) = b[1];
+		*(stream++) = b[0];
+		len -= 2;
 	}
 }
 
@@ -2537,50 +2569,95 @@ void audio_callback(void *userdata, Uint8 * stream, int len) {
 int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 		int ret = 1;
 		spc_voice_t *v = &state->voices[voice_nr];
-		brr_block_t *block = v->block;
+		// brr_block_t *block = v->block;
 
 		/* kon() initializes v->block, so block should never be NULL
 		 * when we get here.
 		 */
 		assert(NULL != v->block);
 
-		printf("last_chunk? %d\n", block->last_chunk);
-		printf("loop? %d\n", block->loop_flag);
+		// printf("last_chunk? %d\n", block->last_chunk);
+		// printf("loop? %d\n", block->loop_flag);
 
 		v->cur_addr += 9;
 
 		if (v->block->last_chunk) {
+			// printf("v[%d] End of chunk.\n", voice_nr);
 			if (v->block->loop_flag) {
 				v->cur_addr = get_sample_addr(state, voice_nr, 1);
+				// printf("v[%d] Looping from $%04X!\n", voice_nr, v->cur_addr);
 			} else {
 				// XXX: Should the koff() be done here or the caller?
 				ret = 0;
 			}
 
 			free(v->block);
+			v->block = NULL;
 		}
 
 		if (ret) {
+			// printf("v[%d]: decode_next_brr_block(): decoding from $%04X\n", voice_nr, v->cur_addr);
 			v->block = decode_brr_block(&state->ram[v->cur_addr]);
 			v->next_sample = 0;
+
+			/* Last chunk? Set the ENDX flag */
+			if (v->block->last_chunk) {
+				if (v->block->loop_flag) {
+				} else {
+					// XXX: Set voice in Release and enveloppe to 0, apparently. Not a great fade..
+					ret = 0;
+				}
+
+				state->ram[SPC_DSP_ENDX] |= (1 << voice_nr);
+			}
 		}
 
 		return(ret);
 }
 
+/* Get the next sample for all samples and mix them together */
+Sint16 get_next_mixed_sample(spc_state_t *state) {
+	Sint16 samples[SPC_NB_VOICES];
+	Sint16 ret = 0;
+
+	for (int voice_nr = 0; voice_nr < SPC_NB_VOICES; voice_nr++) {
+		spc_voice_t *v = &state->voices[voice_nr];
+
+		if (v->enabled) {
+			samples[voice_nr] = get_next_sample(state, voice_nr);
+		} else {
+			samples[voice_nr] = 0;
+		}
+
+		// XXX: Just a test for now.
+		ret += samples[voice_nr];
+	}
+
+	// ret = ret / SPC_NB_VOICES;
+
+	return(ret);
+}
+
+/* Get the next sample for voice 'voice_nr' */
 Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
-	int done = 0;
+	int has_more = 1;
 	spc_voice_t *v = &state->voices[voice_nr];
 	Sint16 sample;
 
+	/*
 	if (v->next_sample > 15) {
-		done = decode_next_brr_block(state, voice_nr);
+		has_more = decode_next_brr_block(state, voice_nr);
 		v->next_sample = 0;
 	}
+	*/
 
-	// XXX: Pitch can probably change while voice is playing.
+	if (v->counter > 65536) {
+		// printf("v[%d] Counter = %d. Getting next block.\n", voice_nr, v->counter);
+		has_more = decode_next_brr_block(state, voice_nr);
+		v->counter %= 65536;
+	}
 
-	if (done) {
+	if (! has_more) {
 		v->enabled = 0;
 
 		// Silence
@@ -2594,10 +2671,15 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 		sample = v->block->samples[brr_nr];
 
-		// Uint16 out = (INTERP_TABLE[0x00 + index] * sample) >> 10;
-		// Sint16 sample = (INTERP_TABLE[0x00 + index] * sample);
+		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
-		v->counter += v->step;
+		// Uint16 out = (INTERP_TABLE[0x00 + index] * sample) >> 10;
+		// sample = (INTERP_TABLE[0x00 + index] * sample);
+
+		/* Pitch is recalculated at 32kHz */
+		int pitch = get_voice_pitch(state, voice_nr);
+		int step = pitch;
+		v->counter += step;
 	}
 
 	return(sample);
@@ -2605,9 +2687,9 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 /* Called when a voice is Keyed-ON ("KON") */
 void kon_voice(spc_state_t *state, int voice_nr) {
-	int pitch;
+	// int pitch;
 
-	pitch = get_voice_pitch(state, voice_nr);
+	// pitch = get_voice_pitch(state, voice_nr);
 
 	state->voices[voice_nr].enabled = 1;
 	state->voices[voice_nr].cur_addr = get_sample_addr(state, voice_nr, 0);
@@ -2615,7 +2697,7 @@ void kon_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].looping = 0;
 	
 	// XXX: Include PMON
-	state->voices[voice_nr].step = pitch;
+	// state->voices[voice_nr].step = pitch;
 	state->voices[voice_nr].counter = 0;
 
 	/* KON can be called while the voice is already enabled */
@@ -2646,7 +2728,7 @@ void init_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].next_sample = 0;
 	state->voices[voice_nr].looping = 0;
 	state->voices[voice_nr].block = NULL;
-	state->voices[voice_nr].step = 0;
+	// state->voices[voice_nr].step = 0;
 	state->voices[voice_nr].prev_brr_samples[0] = 0;
 	state->voices[voice_nr].prev_brr_samples[1] = 0;
 	state->voices[voice_nr].prev_brr_samples[2] = 0;
@@ -2655,12 +2737,12 @@ void init_voice(spc_state_t *state, int voice_nr) {
 }
 
 int init_audio(char *wanted_device, spc_state_t *state) {
-	int ret = SUCCESS;
 	int err;
-	SDL_AudioSpec desired;
-	SDL_AudioSpec obtained;
+	static SDL_AudioSpec desired;
+	static SDL_AudioSpec obtained;
+	int dev;
 
-	err = SDL_Init(SDL_INIT_AUDIO);
+	err = SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER);
 
 	if (0 != err) {
 		fprintf(stderr, "ERROR: SDL_Init(): %s\n", SDL_GetError());
@@ -2671,15 +2753,14 @@ int init_audio(char *wanted_device, spc_state_t *state) {
 
 	desired.freq = 32000;		// SPC Samples are played at 32kHz, I believe.
 	desired.format = AUDIO_S16;	// SPC samples are signed 16-bit samples
-	desired.samples = 512;		// Don't attempt to queue too many samples since we have to interpret in real-time
-	desired.size = 0;		// Will be initialized by SDL_OpenAudio()
-	desired.silence = 0;		// Will be initialized by SDL_OpenAudio()
+	desired.samples = 1024;		// Queue up to about half a second's worth of samples.
+	desired.channels = 1;		// XXX: Not sure yet if mono or stereo..
 	desired.callback = audio_callback;
 	desired.userdata = state;
 
-	err = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
+	dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
 
-	if (err < 0) {
+	if (dev < 0) {
 		fprintf(stderr, "ERROR: SDL_OpenAudioDevice(): %s\n", SDL_GetError());
 		exit(1);
 	}
@@ -2718,13 +2799,12 @@ int init_audio(char *wanted_device, spc_state_t *state) {
 		dev_name = SDL_GetAudioDriver(idx);
 		if (SDL_AudioInit(dev_name))
 	}
+	printf("%s\n", SDL_GetError());
 #endif
 
-	printf("%s\n", SDL_GetError());
+	printf("Current audio driver: %s\n", SDL_GetAudioDeviceName(dev, 0));
 
-	printf("Current audio driver: %s\n", SDL_GetCurrentAudioDriver());
-
-	return(ret);
+	return(dev);
 }
 
 typedef struct prof_struct {
@@ -2816,6 +2896,22 @@ int is_waiting_on_timer(Uint8 *mem) {
 	return(ret);
 }
 
+void dump_buffer_to_file(spc_state_t *state) {
+	Sint16 sample;
+	int len;
+
+	assert(state->out_file);
+
+	len = buffer_get_len(state->audio_buf);
+
+	while (len > 0) {
+		sample = buffer_get_one(state->audio_buf);
+		fprintf(state->out_file, "%hd\n", sample);
+		fflush(state->out_file);
+		len--;
+	}
+}
+
 int main (int argc, char *argv[])
 {
 	spc_file_t *spc_file;
@@ -2825,6 +2921,7 @@ int main (int argc, char *argv[])
 	int break_addr = -1;
 	char *device = NULL;
 	sig_t err;
+	unsigned long next_audio_sample;
 
 	if (argc != 2) {
 		usage(argv[0]);
@@ -2832,7 +2929,8 @@ int main (int argc, char *argv[])
 	}
 
 	/* XXX: Allow audio-less mode. For example, when converting to a wav */
-	if (init_audio(device, &state) != SUCCESS) {
+	state.audio_dev = init_audio(device, &state);
+	if (state.audio_dev < 0) {
 		fprintf(stderr, "Could not initialize audio\n");
 		exit(1);
 	}
@@ -2852,6 +2950,11 @@ int main (int argc, char *argv[])
 	state.trace = 0;
 	state.profiling = 0;
 	state.profile_info = NULL;
+	state.audio_buf = buffer_create(AUDIO_BUFFER_SIZE);
+	state.out_file = NULL;
+
+	// XXX: debugging
+	// state.out_file = fopen("test.out", "w");
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -2874,6 +2977,8 @@ int main (int argc, char *argv[])
 
 	// decode_brr_block(&state.ram[0x1000]);
 
+	next_audio_sample = 0;
+
 	err = signal(SIGINT, handle_sigint);
 	if (SIG_ERR == err) {
 		perror("signal(SIGINT)");
@@ -2888,6 +2993,9 @@ int main (int argc, char *argv[])
 
 		// Should we break after every instruction?
 		if (g_do_break) {
+			// XXX: Silence audio when single-stepping
+			SDL_PauseAudioDevice(state.audio_dev, 1);
+
 			// dump_registers(state.regs);
 			dump_instruction(state.regs->pc, state.ram);
 
@@ -2920,6 +3028,8 @@ int main (int argc, char *argv[])
 
 				case 'c': // continue
 				{
+					// XXX: Restore audio
+					SDL_PauseAudioDevice(state.audio_dev, 0);
 					printf("Continue.\n");
 					g_do_break = 0;
 				}
@@ -2952,6 +3062,7 @@ int main (int argc, char *argv[])
 				case '\n':
 				case 'n':
 					execute_next(&state);
+					update_counters(&state);
 					break;
 
 				case 'p':
@@ -2966,6 +3077,7 @@ int main (int argc, char *argv[])
 					break;
 
 				case 'q':
+					SDL_PauseAudioDevice(state.audio_dev, 1);
 					quit = 1;
 					break;
 
@@ -3120,6 +3232,29 @@ int main (int argc, char *argv[])
 
 			if ((state.cycle % (2048 * 1000)) <= 6) {
 				printf("Seconds elapsed: %0.1f\n", (float) state.cycle / (2048 * 1000));
+			}
+
+		}
+
+		if (state.cycle >= next_audio_sample) {
+			next_audio_sample = state.cycle + AUDIO_SAMPLE_PERIOD;
+			// printf("[%lu] Audio sample\n", state.cycle);
+			Sint16 s = get_next_mixed_sample(&state);
+
+			while (buffer_is_full(state.audio_buf) && ! g_do_break) {
+				if (state.out_file) {
+					dump_buffer_to_file(&state);
+				} else {
+					// Wait on audio driver to read the buffer.
+					printf("Audio buffer is full.\n");
+					SDL_Delay(50);
+				}
+			}
+
+			if (! g_do_break) {
+				SDL_LockAudioDevice(state.audio_dev);
+				buffer_add_one(state.audio_buf, s);
+				SDL_UnlockAudioDevice(state.audio_dev);
 			}
 		}
 	}
