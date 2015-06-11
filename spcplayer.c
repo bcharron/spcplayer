@@ -186,7 +186,7 @@ typedef struct spc_voice_s {
 	brr_block_t *block;	// Current block
 	// int step;		// Current step, based on pitch
 	int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
-	Uint16 prev_brr_samples[4];	// Used for interpolation
+	Sint16 prev_brr_samples[3];	// Used for interpolation
 } spc_voice_t;
 
 typedef struct spc_state_s {
@@ -288,9 +288,8 @@ char *flags_str(spc_flags_t flags)
 }
 
 /* Convert from 16-bit little-endian */
-// XXX: IMPLEMENT ME
 uint16_t le16toh(uint16_t i) {
-	return(i);
+	return(SDL_SwapLE16(i));
 }
 
 /* Make a 16-bit value out of two 8-bit ones */
@@ -639,7 +638,7 @@ void write_byte(spc_state_t *state, Uint16 addr, Uint8 val) {
 }
 
 void write_word(spc_state_t *state, Uint16 addr, Uint16 val) {
-	// XXX: Don't know what the proper order is.
+	// XXX: Pretty sure this is little-endian
 	Uint8 l = get_low(val);
 	Uint8 h = get_high(val);
 
@@ -653,7 +652,6 @@ Uint8 read_byte(spc_state_t *state, Uint16 addr) {
 
 	// Handle registers 0xF0-0xFF
 	if ((addr & 0xFFF0) == 0x00F0) {
-		// XXX: Handle register here.
 		val = register_read(state, addr);
 	} else
 		val = state->ram[addr];
@@ -1228,6 +1226,18 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = do_bbc(state, 1, dp_addr, operand2);
 			pc_adjusted = 1;
 			break;
+
+		case 0x3A: // INCW $dp
+		{
+			dp_addr = get_direct_page_addr(state, operand1);
+
+			Uint16 word = read_word(state, dp_addr);
+			word++;
+			adjust_flags(state, word);
+			write_word(state, dp_addr, word);
+			cycles = 6;
+		}
+		break;
 
 		case 0x3D: // INC X
 			state->regs->x++;
@@ -2200,6 +2210,7 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 
 	dir = state->dsp_registers[SPC_DSP_DIR];
 	voice_srcn_addr = (voice_nr << 4) | SPC_DSP_VxSCRN;
+	// printf("VxSCRN for %d is %04X\n", voice_nr, voice_srcn_addr);
 	voice_srcn = state->dsp_registers[voice_srcn_addr];
 
 	// printf("Instrument for voice %d is %d\n", voice_nr, voice_srcn);
@@ -2208,7 +2219,9 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	 * Each entry in the 'instrument table' is 4 bytes: one word for the
 	 * addr of the sample itself and another for the loop addr.
 	 */
-	addr_ptr = (dir << 8) | (voice_srcn * 4);
+	addr_ptr = (dir << 8) + (voice_srcn * 4);
+
+	// printf("addr_ptr: %04X\n", addr_ptr);
 
 	if (loop)
 		addr = read_word(state, addr_ptr + 2);
@@ -2251,11 +2264,14 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 	// printf("Byte 1: %02X\n", ptr[0]);
 
 	b = ptr[0];
-	range = (b & 0xF0) >> 4;
-	filter = (b & 0x0C) >> 2;
-	loop_flag = (b & 0x02) >> 1;
-	last_chunk = (b & 0x01);
-	loop_code = (b & 0x03);
+	range = (b >> 4) & 0x0F;
+	filter = (b >> 2) & 0x03;
+	loop_flag = (b >> 1) & 0x01;
+	last_chunk = b & 0x01;
+	loop_code = b & 0x03;
+
+	// printf("Range: %d\n", filter);
+	// printf("Block filter: %d\n", filter);
 
 	block->filter = filter;
 	block->loop_flag = loop_flag;
@@ -2272,16 +2288,18 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 
 		// printf("Byte %d: %02X\n", x, ptr[x + 1]);
 
-		tmp.i = (ptr[x + 1] & 0xF0) >> 4;
+		// Most Significant Nibble first
+		// Start at ptr[1] because ptr[0] is header
+		tmp.i = (ptr[x + 1] >> 4) & 0x0F;
 		dst = tmp.i;
 		dst = (dst << range) >> 1;
+
+		block->samples[2 * x] = dst;
 
 		// XXX: According to apudsp.txt, there should be a final shift
 		// to the right here...
 
-		block->samples[2 * x] = dst;
-
-		tmp.i = (ptr[x + 1] & 0x0F);
+		tmp.i = ptr[x + 1] & 0x0F;
 		dst = tmp.i;
 		dst = (dst << range) >> 1;
 
@@ -2618,7 +2636,7 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 /* Get the next sample for all samples and mix them together */
 Sint16 get_next_mixed_sample(spc_state_t *state) {
 	Sint16 samples[SPC_NB_VOICES];
-	Sint16 ret = 0;
+	int ret = 0;
 
 	for (int voice_nr = 0; voice_nr < SPC_NB_VOICES; voice_nr++) {
 		spc_voice_t *v = &state->voices[voice_nr];
@@ -2633,7 +2651,10 @@ Sint16 get_next_mixed_sample(spc_state_t *state) {
 		ret += samples[voice_nr];
 	}
 
-	// ret = ret / SPC_NB_VOICES;
+	if (ret > 65535)
+		ret = 65535;
+	else if (ret < -65536)
+		ret = -65536;
 
 	return(ret);
 }
@@ -2663,22 +2684,34 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		// Silence
 		sample = 0;
 	} else {
-		int brr_nr = ((v->counter & 0xF000) >> 12) & 0xF;
-		int index = ((v->counter & 0x0FF0) >> 4);
+		int brr_nr = (v->counter >> 12) & 0xF;
+		int index = (v->counter >> 4) & 0x1FF;
 
 		assert(brr_nr <= 15);
 		assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
+		assert(index <= 511);
 
 		sample = v->block->samples[brr_nr];
 
 		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
-		// Uint16 out = (INTERP_TABLE[0x00 + index] * sample) >> 10;
-		// sample = (INTERP_TABLE[0x00 + index] * sample);
+		Sint16 out = (INTERP_TABLE[0x0FF - index] * v->prev_brr_samples[0]) >> 10;
+		out       += (INTERP_TABLE[0x1FF - index] * v->prev_brr_samples[1]) >> 10;
+		out       += (INTERP_TABLE[0x100 + index] * v->prev_brr_samples[2]) >> 10;
+		out       += (INTERP_TABLE[0x000 + index] * sample) >> 10;
+		out = out >> 1;
+
+		// printf("v[%d]: out: %d\n", voice_nr, out);
+
+		/* Rotate the samples for next time */
+		v->prev_brr_samples[0] = v->prev_brr_samples[1];
+		v->prev_brr_samples[1] = v->prev_brr_samples[2];
+		v->prev_brr_samples[2] = sample;
 
 		/* Pitch is recalculated at 32kHz */
 		int pitch = get_voice_pitch(state, voice_nr);
-		int step = pitch;
+		int step = 0x1000;
+		step = pitch;
 		v->counter += step;
 	}
 
@@ -2732,7 +2765,6 @@ void init_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].prev_brr_samples[0] = 0;
 	state->voices[voice_nr].prev_brr_samples[1] = 0;
 	state->voices[voice_nr].prev_brr_samples[2] = 0;
-	state->voices[voice_nr].prev_brr_samples[3] = 0;
 	state->voices[voice_nr].counter = 0;
 }
 
@@ -2742,11 +2774,23 @@ int init_audio(char *wanted_device, spc_state_t *state) {
 	static SDL_AudioSpec obtained;
 	int dev;
 
+	printf("Drivers:\n");
+	for (int x = 0; x < SDL_GetNumAudioDrivers(); x++) {
+		printf("	[%d] %s\n", x, SDL_GetAudioDriver(x));
+	}
+
 	err = SDL_Init(SDL_INIT_AUDIO | SDL_INIT_TIMER);
 
 	if (0 != err) {
 		fprintf(stderr, "ERROR: SDL_Init(): %s\n", SDL_GetError());
 		exit(1);
+	}
+
+	printf("Current audio driver: %s\n", SDL_GetCurrentAudioDriver());
+
+	printf("Devices:\n");
+	for (int x = 0; x < SDL_GetNumAudioDevices(0); x++) {
+		printf("	[%d] %s\n", x, SDL_GetAudioDeviceName(x, 0));
 	}
 
 	SDL_zero(desired);
@@ -2758,51 +2802,22 @@ int init_audio(char *wanted_device, spc_state_t *state) {
 	desired.callback = audio_callback;
 	desired.userdata = state;
 
-	dev = SDL_OpenAudioDevice(NULL, 0, &desired, &obtained, 0);
+	// XXX: The device ID returned is always >= 2 when succesful, but how
+	// does that relate to SDL_GetAudioDeviceName()? Does it mean I have to
+	// do -2?
+	dev = SDL_OpenAudioDevice("Built-in Output", 0, &desired, &obtained, 0);
 
-	if (dev < 0) {
+	if (dev <= 0) {
 		fprintf(stderr, "ERROR: SDL_OpenAudioDevice(): %s\n", SDL_GetError());
 		exit(1);
 	}
 
+	// XXX: Am I expected to substract 2 from the device ID to identify the right one?
+	printf("SDL_OpenAudioDevice(): Obtained device: %d (%s)\n", dev, SDL_GetAudioDeviceName(dev - 2, 0));
+
 	printf("SDL_OpenAudioDevice(): Obtained freq: %d\n", obtained.freq);
 	printf("SDL_OpenAudioDevice(): Obtained format: %d (AUDIO_S16 == %d)\n", obtained.format, AUDIO_S16);
 	printf("SDL_OpenAudioDevice(): Obtained samples: %d\n", obtained.samples);
-
-#if 0
-	int num_drivers;
-	int idx = -1;
-	char *dev_name;
-
-	num_drivers = SDL_GetNumAudioDrivers();
-
-	for (int x = 0; x < num_drivers; x++) {
-		dev_name = SDL_GetAudioDriver(x);
-		printf("Device %d: %s\n", x, dev_name);
-
-		if (wanted_device != NULL && strcmp(wanted_device, dev_name) == 0) {
-			idx = x;
-		}
-	}
-
-	/* User has not specified a device, or it was not found */
-	if (idx == -1) {
-		if (wanted_device != NULL) {
-			fprintf(Stderr, "ERROR: Could not find device %s\n", wanted_device);
-			err = FATAL_ERROR;
-		} else {
-			idx = 0;
-		}
-	}
-
-	if (idx >= 0) {
-		dev_name = SDL_GetAudioDriver(idx);
-		if (SDL_AudioInit(dev_name))
-	}
-	printf("%s\n", SDL_GetError());
-#endif
-
-	printf("Current audio driver: %s\n", SDL_GetAudioDeviceName(dev, 0));
 
 	return(dev);
 }
@@ -3029,7 +3044,9 @@ int main (int argc, char *argv[])
 				case 'c': // continue
 				{
 					// XXX: Restore audio
-					SDL_PauseAudioDevice(state.audio_dev, 0);
+					if (! state.out_file)
+						SDL_PauseAudioDevice(state.audio_dev, 0);
+
 					printf("Continue.\n");
 					g_do_break = 0;
 				}
@@ -3246,7 +3263,7 @@ int main (int argc, char *argv[])
 					dump_buffer_to_file(&state);
 				} else {
 					// Wait on audio driver to read the buffer.
-					printf("Audio buffer is full.\n");
+					// printf("Audio buffer is full.\n");
 					SDL_Delay(50);
 				}
 			}
