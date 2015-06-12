@@ -1247,9 +1247,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x3E: // CMP X, $xx
 		{
-			Uint8 val1 = get_direct_page_byte(state, operand1);
-
-			do_cmp(state, state->regs->x, val1);
+			val = get_direct_page_byte(state, operand1);
+			do_cmp(state, state->regs->x, val);
 			cycles = 6;
 		}
 		break;
@@ -1430,6 +1429,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0x78: // CMP $dp, #imm
+			val = get_direct_page_byte(state, operand2);
+			do_cmp(state, val, operand1);
+			cycles = 5;
+			break;
+
 		case 0x7C: // ROR A
 			val  = state->regs->a & 0x01;
 			state->regs->a >>= 1;
@@ -1447,7 +1452,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x7E: // CMP Y, $dp
 			val = get_direct_page_byte(state, operand1);
-			do_cmp(state, state->regs->a, val);
+			do_cmp(state, state->regs->y, val);
 			cycles = 3;
 			break;
 
@@ -1590,7 +1595,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
-		case 0xAD: // CMP Y,#$xx
+		case 0xAD: // CMP Y, #$xx
 			do_cmp(state, state->regs->y, operand1);
 			cycles = 2;
 			break;
