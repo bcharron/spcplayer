@@ -1291,6 +1291,25 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x4E: // TCLR1 $xxyy
+		{
+			Uint8 l = get_direct_page_byte(state, operand1);
+			Uint8 h = get_direct_page_byte(state, operand1 + 1);
+
+			abs_addr  = make16(h, l);
+
+			val = read_byte(state, abs_addr);
+
+			// Only update N/Z, but the same way as do_cmp().
+			adjust_flags(state, state->regs->a - val);
+
+			val = val & (~state->regs->a);
+
+			write_byte(state, abs_addr, val);
+			cycles = 6;
+		}
+		break;
+
 		case 0x50: // BVC
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.v, operand1);
 			pc_adjusted = 1;
