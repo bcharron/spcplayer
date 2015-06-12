@@ -1406,6 +1406,23 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x6B: // ROR $dp
+		{
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+
+			int tmp_carry = val & 0x01;
+
+			val >>= 1;
+			val |= ((Uint8) state->regs->psw.f.c << 7);
+			state->regs->psw.f.c = tmp_carry;
+
+			write_byte(state, dp_addr, val);
+			adjust_flags(state, val);
+			cycles = 4;
+		}
+		break;
+
 		case 0x6D: // PUSH Y
 			do_push(state, state->regs->y);
 			cycles = 4;
