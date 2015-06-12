@@ -1631,6 +1631,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xA4: // SBC A, $dp
+			val = get_direct_page_byte(state, operand1);
+			state->regs->a = do_sbc(state, state->regs->a, val);
+			cycles = 3;
+			break;
+
 		case 0xA8: // SBC A, $#imm
 			state->regs->a = do_sbc(state, state->regs->a, operand1);
 			cycles = 2;
