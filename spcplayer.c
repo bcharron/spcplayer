@@ -181,7 +181,6 @@ typedef struct spc_file_s {
 typedef struct spc_voice_s {
 	int enabled;		// 1 if enabled (KON), 0 otherwise
 	Uint16 cur_addr;	// Address of current sample block
-	int next_sample;	// Number of the next sample to play in the block
 	int looping;		// Whether it's in looping mode
 	brr_block_t *block;	// Current block
 	// int step;		// Current step, based on pitch
@@ -2781,7 +2780,6 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 		if (ret) {
 			// printf("v[%d]: decode_next_brr_block(): decoding from $%04X\n", voice_nr, v->cur_addr);
 			v->block = decode_brr_block(&state->ram[v->cur_addr]);
-			v->next_sample = 0;
 
 			/* Last chunk? Set the ENDX flag */
 			if (v->block->last_chunk) {
@@ -2829,13 +2827,6 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 	int has_more = 1;
 	spc_voice_t *v = &state->voices[voice_nr];
 	Sint16 sample;
-
-	/*
-	if (v->next_sample > 15) {
-		has_more = decode_next_brr_block(state, voice_nr);
-		v->next_sample = 0;
-	}
-	*/
 
 	if (v->counter > 65536) {
 		// printf("v[%d] Counter = %d. Getting next block.\n", voice_nr, v->counter);
@@ -2891,7 +2882,6 @@ void kon_voice(spc_state_t *state, int voice_nr) {
 
 	state->voices[voice_nr].enabled = 1;
 	state->voices[voice_nr].cur_addr = get_sample_addr(state, voice_nr, 0);
-	state->voices[voice_nr].next_sample = 0;
 	state->voices[voice_nr].looping = 0;
 	
 	// XXX: Include PMON
@@ -2923,7 +2913,6 @@ void koff_voice(spc_state_t *state, int voice_nr) {
 void init_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].enabled = 0;
 	state->voices[voice_nr].cur_addr = 0;
-	state->voices[voice_nr].next_sample = 0;
 	state->voices[voice_nr].looping = 0;
 	state->voices[voice_nr].block = NULL;
 	// state->voices[voice_nr].step = 0;
