@@ -2013,7 +2013,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 6;
 		}
 		break;
-			
+
+		case 0xF8: // MOV X, $dp
+			state->regs->x = get_direct_page_byte(state, operand1);
+			adjust_flags(state, state->regs->x);
+			cycles = 3;
+			break;
 
 		case 0xFB: // MOVZ Y, $xx + X
 			dp_addr = get_direct_page_addr(state, operand1);
