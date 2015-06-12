@@ -1266,7 +1266,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0x44: // EORZ A, $xx
-			val = get_direct_page_addr(state, operand1);
+			val = get_direct_page_byte(state, operand1);
 			state->regs->a ^= val;
 			adjust_flags(state, state->regs->a);
 			cycles = 3;
@@ -1279,10 +1279,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0x4B: // LSRZ $xx
-			val = get_direct_page_addr(state, operand1);
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			// Low bit goes into Carry
 			state->regs->psw.f.c = val & 0x01;
 			val >>= 1;
 			adjust_flags(state, val);
+			write_byte(state, dp_addr, val);
 			cycles = 2;
 			break;
 
@@ -1485,6 +1488,16 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x94: // ADC A, $dp + X
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+
+			val = read_byte(state, dp_addr);
+
+			state->regs->a = do_adc(state, state->regs->a, val);
+			cycles = 4;
+			break;
+
 		case 0x95: // ADC A, $xxxx + X
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->x;
@@ -1506,7 +1519,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0x98: // ADC $dp, #imm
-			dp_addr = get_direct_page_byte(state, operand2);
+			dp_addr = get_direct_page_addr(state, operand2);
 			val = read_byte(state, dp_addr);
 			val = do_adc(state, val, operand1);
 			write_byte(state, dp_addr, val);
