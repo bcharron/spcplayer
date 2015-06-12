@@ -1681,6 +1681,16 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0xB5: // SBC A, $xxxx + X
+			abs_addr = make16(operand2, operand1);
+			abs_addr += state->regs->x;
+
+			val = read_byte(state, abs_addr);
+			
+			state->regs->a = do_sbc(state, state->regs->a, val);
+			cycles = 5;
+			break;
+
 		case 0xB6: // SBC A, $xxxx + Y
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->y;
@@ -1688,7 +1698,6 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			val = read_byte(state, abs_addr);
 			
 			state->regs->a = do_sbc(state, state->regs->a, val);
-			// state->regs->a = state->regs->a - val - state->regs->psw.f.c;
 			cycles = 5;
 			break;
 
