@@ -1097,6 +1097,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 1;
 			break;
 
+		case 0x02: // SET0 $xx (SET1 $xx.0)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val |= 1;
+			write_byte(state, dp_addr, val);
+			cycles = 4;
+			break;
+
 		case 0x03: // BBS0 $00xx, $yy
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbs(state, 0, dp_addr, operand2);
@@ -1184,6 +1192,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x22: // SET1 $xx (SET1 $xx.1)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val |= (1 << 1);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
+			break;
+
 		case 0x24: // ANDZ A, $xx
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a &= val;
@@ -1262,6 +1278,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x40: // SETP
 			state->regs->psw.f.p = 1;
 			cycles = 2;
+			break;
+
+		case 0x42: // SET2 $xx (SET1 $xx.2)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val |= (1 << 2);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0x44: // EORZ A, $xx
@@ -1345,6 +1369,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x60: // CLRC
 			state->regs->psw.f.c = 0;
 			cycles = 2;
+			break;
+
+		case 0x62: // SET3 $xx (SET1 $xx.3)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val |= (1 << 3);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0x65: // CMP A, $xxyy
@@ -1459,6 +1491,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x80: // SETC
 			state->regs->psw.f.c = 1;
 			cycles = 2;
+			break;
+
+		case 0x82: // SET4 $xx (SET1 $xx.4)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val |= (1 << 4);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0x84: // ADC A, $dp
@@ -1583,6 +1623,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0xA2: // SET5 $xx (SET1 $xx.5)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val |= (1 << 5);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
+			break;
+
 		case 0xA8: // SBC A, $#imm
 			state->regs->a = do_sbc(state, state->regs->a, operand1);
 			cycles = 2;
@@ -1657,6 +1705,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->a++;
 			adjust_flags(state, state->regs->a);
 			cycles = 2;
+			break;
+
+		case 0xC2: // SET6 $xx (SET1 $xx.6)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val |= (1 << 6);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0xC4: // MOVZ $xx, A
@@ -1801,10 +1857,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles += 2;
 			break;
 
-		case 0xE2: // SET7 $xx
+		case 0xE2: // SET7 $xx (SET1 $dp.7)
 			dp_addr = get_direct_page_addr(state, operand1);
-			state->ram[dp_addr] |= 0x80;
-			cycles += 4;
+			val = read_byte(state, dp_addr);
+			val |= (1 << 7);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0xE3: // BBS7 $00xx, $yy
@@ -3038,7 +3096,7 @@ int main (int argc, char *argv[])
 	state.out_file = NULL;
 
 	// XXX: debugging
-	state.out_file = fopen("test.out", "w");
+	// state.out_file = fopen("test.out", "w");
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
