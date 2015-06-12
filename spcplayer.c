@@ -1486,6 +1486,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0x98: // ADC $dp, #imm
+			dp_addr = get_direct_page_byte(state, operand2);
+			val = read_byte(state, dp_addr);
+			val = do_adc(state, val, operand1);
+			write_byte(state, dp_addr, val);
+			cycles = 5;
+			break;
+
 		case 0x9A: // SUBW YA, $xx
 		{
 			Uint8 l = get_direct_page_byte(state, operand1);
@@ -1607,6 +1615,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 			cycles = 5;
 		}
+
+		case 0xBC: // INC A
+			state->regs->a++;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
 
 		case 0xC4: // MOVZ $xx, A
 			dp_addr = get_direct_page_addr(state, operand1);
@@ -2533,8 +2547,8 @@ void show_menu(void) {
 	printf("n          Execute next instruction\n");
 	printf("p          Enable/disable profiling\n");
 	printf("sd         Show DSP Registers\n");
+	printf("sp         Show profiling counters\n");
 	printf("sr         Show CPU Registers\n");
-	printf("sr         Show profiling counters\n");
 	printf("ta         Enable/disable ALL tracing \n");
 	printf("td         Enable/disable DSP Operations tracing \n");
 	printf("ti         Enable/disable instruction tracing \n");
@@ -2564,7 +2578,13 @@ void audio_callback(void *userdata, Uint8 * stream, int len) {
 	spc_state_t *state = (spc_state_t *) userdata;
 	int available;
 
-	// printf("audio_callback(len=%d)\n", len);
+	if (NULL != state->out_file) {
+		// Writing to file, so skip the callback to avoid corrupting audio_buf.
+		memset(stream, 0, len);
+		return;
+	}
+
+	printf("audio_callback(len=%d)\n", len);
 
 	available = buffer_get_len(state->audio_buf);
 
@@ -2924,14 +2944,12 @@ void dump_buffer_to_file(spc_state_t *state) {
 
 	assert(state->out_file);
 
-	len = buffer_get_len(state->audio_buf);
-
-	while (len > 0) {
+	for (len = buffer_get_len(state->audio_buf); len > 0; len--) {
 		sample = buffer_get_one(state->audio_buf);
 		fprintf(state->out_file, "%hd\n", sample);
-		fflush(state->out_file);
-		len--;
 	}
+
+	fflush(state->out_file);
 }
 
 int main (int argc, char *argv[])
@@ -2944,6 +2962,7 @@ int main (int argc, char *argv[])
 	char *device = NULL;
 	sig_t err;
 	unsigned long next_audio_sample;
+	int playing = 0;
 
 	if (argc != 2) {
 		usage(argv[0]);
@@ -2976,7 +2995,7 @@ int main (int argc, char *argv[])
 	state.out_file = NULL;
 
 	// XXX: debugging
-	// state.out_file = fopen("test.out", "w");
+	state.out_file = fopen("test.out", "w");
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -3017,6 +3036,7 @@ int main (int argc, char *argv[])
 		if (g_do_break) {
 			// XXX: Silence audio when single-stepping
 			SDL_PauseAudioDevice(state.audio_dev, 1);
+			playing = 0;
 
 			// dump_registers(state.regs);
 			dump_instruction(state.regs->pc, state.ram);
@@ -3051,8 +3071,8 @@ int main (int argc, char *argv[])
 				case 'c': // continue
 				{
 					// XXX: Restore audio
-					if (! state.out_file)
-						SDL_PauseAudioDevice(state.audio_dev, 0);
+					// if (! state.out_file)
+						// SDL_PauseAudioDevice(state.audio_dev, 0);
 
 					printf("Continue.\n");
 					g_do_break = 0;
@@ -3102,6 +3122,7 @@ int main (int argc, char *argv[])
 
 				case 'q':
 					SDL_PauseAudioDevice(state.audio_dev, 1);
+					playing = 0;
 					quit = 1;
 					break;
 
@@ -3266,6 +3287,14 @@ int main (int argc, char *argv[])
 			Sint16 s = get_next_mixed_sample(&state);
 
 			while (buffer_is_full(state.audio_buf) && ! g_do_break) {
+				if (! playing) {
+					// Start audio when buffer is full
+					if (NULL == state.out_file)
+						SDL_PauseAudioDevice(state.audio_dev, 0);
+
+					playing = 1;
+				}
+
 				if (state.out_file) {
 					dump_buffer_to_file(&state);
 				} else {
