@@ -1178,6 +1178,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x1D: // DEC X
+			state->regs->x--;
+			adjust_flags(state, state->regs->x);
+			cycles = 2;
+			break;
+
 		case 0x1E: // CMP X, $xxyy
 		{
 			abs_addr = make16(operand2, operand1);
