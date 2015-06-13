@@ -183,7 +183,6 @@ typedef struct spc_voice_s {
 	Uint16 cur_addr;	// Address of current sample block
 	int looping;		// Whether it's in looping mode
 	brr_block_t *block;	// Current block
-	// int step;		// Current step, based on pitch
 	int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
 	Sint16 prev_brr_samples[3];	// Used for interpolation
 } spc_voice_t;
@@ -793,19 +792,22 @@ int do_bbc(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 int do_bbs(spc_state_t *state, int bit, Uint16 src_addr, Uint8 rel) {
 	int cycles;
 	Uint8 test;
+	Uint8 val;
 	
 	test = 1 << bit;
 
-	if (state->ram[src_addr] & test) {
-		state->regs->pc += (Sint8) rel + 3;
+	state->regs->pc += 3;
+	cycles = 5;
+
+	val = read_byte(state, src_addr);
+
+	if (val & test) {
+		state->regs->pc += (Sint8) rel;
 
 		if (state->trace & TRACE_CPU_JUMPS)
 			printf("Jumping to 0x%04X\n", state->regs->pc);
 
-		cycles = 7;
-	} else {
-		state->regs->pc += 3;
-		cycles = 5;
+		cycles += 2;
 	}
 
 	return(cycles);
@@ -1163,8 +1165,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
-		case 0x13: // BBC0 $dp, $yy
-			// XXX: BBC0 is 0x13?
+		case 0x13: // BBC0 $dp, $r
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 0, dp_addr, operand2);
 			pc_adjusted = 1;
@@ -1197,6 +1198,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			val |= (1 << 1);
 			write_byte(state, dp_addr, val);
 			cycles = 4;
+			break;
+
+		case 0x23: // BBS1 $dp, r
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 1, dp_addr, operand2);
+			pc_adjusted = 1;
 			break;
 
 		case 0x24: // ANDZ A, $xx
@@ -1236,7 +1243,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
-		case 0x33: // BBC1 $00xx, $yy
+		case 0x33: // BBC1 $dp, $r
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 1, dp_addr, operand2);
 			pc_adjusted = 1;
@@ -1285,6 +1292,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			val |= (1 << 2);
 			write_byte(state, dp_addr, val);
 			cycles = 4;
+			break;
+
+		case 0x43: // BBS2 $dp, r (AKA BBS $dp.2, r)
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 2, dp_addr, operand2);
+			pc_adjusted = 1;
 			break;
 
 		case 0x44: // EORZ A, $xx
@@ -1340,6 +1353,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x53: // BBC2 $dp, $r
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 2, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
+
 		case 0x5C: // LSR A
 			state->regs->psw.f.c = state->regs->a & 0x01;
 			state->regs->a = state->regs->a >> 1;
@@ -1376,6 +1395,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			val |= (1 << 3);
 			write_byte(state, dp_addr, val);
 			cycles = 4;
+			break;
+
+		case 0x63: // BBS3 $dp, r (AKA BBS $dp.3, r)
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 3, dp_addr, operand2);
+			pc_adjusted = 1;
 			break;
 
 		case 0x65: // CMP A, $xxyy
@@ -1457,6 +1482,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x73: // BBC3 $dp, $r
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 3, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
+
 		case 0x7A: // ADDW YA, $xx
 		{
 			Uint8 l = get_direct_page_byte(state, operand1);
@@ -1517,6 +1548,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x83: // BBS4 $dp, r (AKA BBS $dp.4, r)
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 4, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
+
 		case 0x84: // ADC A, $dp
 			dp_addr = get_direct_page_addr(state, operand1);
 			val = read_byte(state, dp_addr);
@@ -1546,6 +1583,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x90: // BCC
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.c, operand1);
+			pc_adjusted = 1;
+			break;
+
+		case 0x93: // BBC4 $dp, $r
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 4, dp_addr, operand2);
 			pc_adjusted = 1;
 			break;
 
@@ -1647,6 +1690,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xA3: // BBS5 $dp, r (AKA BBS $dp.5, r)
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 5, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
+
 		case 0xA4: // SBC A, $dp
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a = do_sbc(state, state->regs->a, val);
@@ -1677,6 +1726,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xB0: // BCS $xx
 			cycles = branch_if_flag_set(state, state->regs->psw.f.c, operand1);
+			pc_adjusted = 1;
+			break;
+
+		case 0xB3: // BBC5 $dp, $r
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 5, dp_addr, operand2);
 			pc_adjusted = 1;
 			break;
 
@@ -1746,6 +1801,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xC3: // BBS6 $dp, r (AKA BBS $dp.6, r)
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbs(state, 6, dp_addr, operand2);
+			pc_adjusted = 1;
+			break;
+
 		case 0xC4: // MOVZ $xx, A
 			dp_addr = get_direct_page_addr(state, operand1);
 			write_byte(state, dp_addr, state->regs->a);
@@ -1805,6 +1866,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xD0: // BNE $xx
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
+			pc_adjusted = 1;
+			break;
+
+		case 0xD3: // BBC6 $dp, $r
+			dp_addr = get_direct_page_addr(state, operand1);
+			cycles = do_bbc(state, 6, dp_addr, operand2);
 			pc_adjusted = 1;
 			break;
 
@@ -2368,7 +2435,7 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 
 	dir = state->dsp_registers[SPC_DSP_DIR];
 	voice_srcn_addr = (voice_nr << 4) | SPC_DSP_VxSCRN;
-	// printf("VxSCRN for %d is %04X\n", voice_nr, voice_srcn_addr);
+	// printf("SRCN Addr for voice %d: %02X\n", voice_nr, voice_srcn_addr);
 	voice_srcn = state->dsp_registers[voice_srcn_addr];
 
 	// printf("Instrument for voice %d is %d\n", voice_nr, voice_srcn);
@@ -2377,7 +2444,7 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	 * Each entry in the 'instrument table' is 4 bytes: one word for the
 	 * addr of the sample itself and another for the loop addr.
 	 */
-	addr_ptr = (dir << 8) + (voice_srcn * 4);
+	addr_ptr = dir * 0x100 + (voice_srcn * 4);
 
 	// printf("addr_ptr: %04X\n", addr_ptr);
 
@@ -2463,6 +2530,7 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 
 		block->samples[2 * x + 1] = dst;
 	}
+
 
 	/*
 	for (int x = 0; x < 16; x++)
@@ -2721,7 +2789,7 @@ void audio_callback(void *userdata, Uint8 * stream, int len) {
 		return;
 	}
 
-	printf("audio_callback(len=%d)\n", len);
+	// printf("audio_callback(len=%d)\n", len);
 
 	available = buffer_get_len(state->audio_buf);
 
@@ -2876,16 +2944,11 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 /* Called when a voice is Keyed-ON ("KON") */
 void kon_voice(spc_state_t *state, int voice_nr) {
-	// int pitch;
-
-	// pitch = get_voice_pitch(state, voice_nr);
-
 	state->voices[voice_nr].enabled = 1;
 	state->voices[voice_nr].cur_addr = get_sample_addr(state, voice_nr, 0);
 	state->voices[voice_nr].looping = 0;
 	
 	// XXX: Include PMON
-	// state->voices[voice_nr].step = pitch;
 	state->voices[voice_nr].counter = 0;
 
 	/* KON can be called while the voice is already enabled */
@@ -2911,15 +2974,23 @@ void koff_voice(spc_state_t *state, int voice_nr) {
 
 /* Initialize a voice to a default state at power-up */
 void init_voice(spc_state_t *state, int voice_nr) {
+	int enabled;
+
+	enabled = !!(state->dsp_registers[SPC_DSP_KON] & (1 << voice_nr));
+
 	state->voices[voice_nr].enabled = 0;
 	state->voices[voice_nr].cur_addr = 0;
 	state->voices[voice_nr].looping = 0;
 	state->voices[voice_nr].block = NULL;
-	// state->voices[voice_nr].step = 0;
 	state->voices[voice_nr].prev_brr_samples[0] = 0;
 	state->voices[voice_nr].prev_brr_samples[1] = 0;
 	state->voices[voice_nr].prev_brr_samples[2] = 0;
 	state->voices[voice_nr].counter = 0;
+
+	if (enabled) {
+		printf("Enabling voice %d\n", voice_nr);
+		kon_voice(state, voice_nr);
+	}
 }
 
 int init_audio(char *wanted_device, spc_state_t *state) {
@@ -3197,10 +3268,6 @@ int main (int argc, char *argv[])
 
 				case 'c': // continue
 				{
-					// XXX: Restore audio
-					// if (! state.out_file)
-						// SDL_PauseAudioDevice(state.audio_dev, 0);
-
 					printf("Continue.\n");
 					g_do_break = 0;
 				}
@@ -3438,6 +3505,9 @@ int main (int argc, char *argv[])
 			}
 		}
 	}
+
+	SDL_CloseAudioDevice(state.audio_dev);
+	SDL_Quit();
 
 	return (0);
 }
