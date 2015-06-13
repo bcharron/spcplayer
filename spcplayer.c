@@ -1324,6 +1324,17 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x4C: // LSR $xxyy
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			// Low bit goes into Carry
+			state->regs->psw.f.c = val & 0x01;
+			val >>= 1;
+			adjust_flags(state, val);
+			write_byte(state, abs_addr, val);
+			cycles = 5;
+			break;
+
 		case 0x4D: // PUSH X
 			do_push(state, state->regs->x);
 			cycles = 4;
