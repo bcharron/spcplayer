@@ -1902,12 +1902,18 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
-		case 0xDA: // MOVW $xx, YA
+		case 0xDA: // MOVW $dp, YA
 			dp_addr = get_direct_page_addr(state, operand1);
-			// XXX: Not sure what the order is!! Maybe A gets written first??
-			write_byte(state, dp_addr + 1, state->regs->y);
 			write_byte(state, dp_addr, state->regs->a);
-			cycles = 4;	// XXX: One source says 4, another 5..
+			write_byte(state, dp_addr + 1, state->regs->y);
+			cycles = 5;
+			break;
+
+		case 0xDB: // MOV $dp+X, Y
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+			write_byte(state, dp_addr, state->regs->y);
+			cycles = 5;
 			break;
 
 		case 0xDC: // DEC Y
@@ -2331,7 +2337,7 @@ spc_file_t *read_spc_file(char *filename)
 
 	if (memcmp(spc->header, SPC_HEADER_MAGIC, sizeof(SPC_HEADER_MAGIC)) != 0) {
 		fprintf(stderr, "%s: Invalid header or version.\n", filename);
-		exit(1);
+		// exit(1);
 	}
 
 	if (buf[SPC_TAG_TYPE_OFFSET] == SPC_HAS_ID_TAG)
