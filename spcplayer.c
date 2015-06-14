@@ -1154,6 +1154,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x12: // CLR0 $dp (AKA CLR1 $dp.0)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x01);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
+			break;
+
 		case 0x13: // BBC0 $dp, $r
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 0, dp_addr, operand2);
@@ -1236,6 +1244,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x30: // BMI
 			cycles = branch_if_flag_set(state, state->regs->psw.f.n, operand1);
 			pc_adjusted = 1;
+			break;
+
+		case 0x32: // CLR1 $dp (AKA CLR1 $dp.1)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x02);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0x33: // BBC1 $dp, $r
@@ -1357,6 +1373,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x50: // BVC
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.v, operand1);
 			pc_adjusted = 1;
+			break;
+
+		case 0x52: // CLR2 $dp (AKA CLR1 $dp.2)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x04);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0x53: // BBC2 $dp, $r
@@ -1488,6 +1512,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x72: // CLR3 $dp (AKA CLR1 $dp.3)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x08);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
+			break;
+
 		case 0x73: // BBC3 $dp, $r
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 3, dp_addr, operand2);
@@ -1607,6 +1639,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x90: // BCC
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.c, operand1);
 			pc_adjusted = 1;
+			break;
+
+		case 0x92: // CLR4 $dp (AKA CLR1 $dp.4)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x10);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0x93: // BBC4 $dp, $r
@@ -1752,6 +1792,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0xB2: // CLR5 $dp (AKA CLR1 $dp.5)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x20);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
+			break;
+
 		case 0xB3: // BBC5 $dp, $r
 			dp_addr = get_direct_page_addr(state, operand1);
 			cycles = do_bbc(state, 5, dp_addr, operand2);
@@ -1890,6 +1938,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xD0: // BNE $xx
 			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand1);
 			pc_adjusted = 1;
+			break;
+
+		case 0xD2: // CLR6 $dp (AKA CLR1 $dp.6)
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val &= (~ 0x40);
+			write_byte(state, dp_addr, val);
+			cycles = 4;
 			break;
 
 		case 0xD3: // BBC6 $dp, $r
