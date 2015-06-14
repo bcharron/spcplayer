@@ -1607,6 +1607,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0x88: // ADC A, $#imm
+			state->regs->a = do_adc(state, state->regs->a, operand1);
+			cycles = 2;
+			break;
+
 		case 0x8C: // DEC $xxxx
 			abs_addr = make16(operand2, operand1);
 			val = read_byte(state, abs_addr);
