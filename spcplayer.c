@@ -1690,6 +1690,21 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0x97: // ADC A, [$dp] + Y
+		{
+			Uint8 l = get_direct_page_byte(state, operand1);
+			Uint8 h = get_direct_page_byte(state, operand1 + 1);
+
+			abs_addr = make16(h, l);
+			abs_addr += state->regs->y;
+
+			val = read_byte(state, abs_addr);
+
+			state->regs->a = do_adc(state, state->regs->a, val);
+			cycles = 6;
+		}
+		break;
+
 		case 0x98: // ADC $dp, #imm
 			dp_addr = get_direct_page_addr(state, operand2);
 			val = read_byte(state, dp_addr);
