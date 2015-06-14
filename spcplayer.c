@@ -1567,6 +1567,15 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0x8C: // DEC $xxxx
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			val--;
+			write_byte(state, abs_addr, val);
+			adjust_flags(state, val);
+			cycles = 5;
+			break;
+
 		case 0x8D: // MOV Y,#$xx
 			state->regs->y = operand1;
 			adjust_flags(state, state->regs->y);
