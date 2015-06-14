@@ -339,6 +339,7 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 
 /*
 	Dump a voice to file. If loop is defined, loops for 32k samples (~1 second of audio at 32kHz)
+	** This function is all sorts of wrong. Do not use. **
 */
 void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 	FILE *f;
@@ -374,38 +375,26 @@ void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 
 		counter = 0;
 
-		// Go through samples 0..3, 4..7, 8..11, 12..15
-		// for (int x = 0; x < 4; x++) {
-		int x = 0;
-			counter = counter % 65536;
+		counter = counter % 65536;
 
-			while (counter < (1 << 16)) {
-				int brr_nr = ((counter & 0xF000) >> 12) & 0xF;
-				int index = ((counter & 0x0FF0) >> 4);
-				Sint16 sample = block->samples[x * 4 + brr_nr];
+		while (counter < (1 << 16)) {
+			int brr_nr = ((counter & 0xF000) >> 12) & 0xF;
+			int index = ((counter & 0x0FF0) >> 4);
+			Sint16 sample = block->samples[brr_nr];
 
-				assert(brr_nr <= 15);
-				assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
+			assert(brr_nr <= 15);
+			assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
 
+			Uint16 out = (INTERP_TABLE[0x00 + index] * sample);
 
-				// Uint16 out = (INTERP_TABLE[0x00 + index] * sample) >> 10;
-				Uint16 out = (INTERP_TABLE[0x00 + index] * sample);
+			fprintf(f, "%d\n", sample);
 
-				fprintf(f, "%d\n", sample);
+			written_samples++;
 
-				written_samples++;
+			printf("sample: %d   out: %d  brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, out, brr_nr, index, counter, counter);
 
-				printf("sample: %d   out: %d  brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, out, brr_nr, index, counter, counter);
-
-				counter += step;
-			}
-		// }
-
-		/*
-		for (int x = 0; x < 16; x++) {
-			fprintf(f, "%d\n", block->samples[x]);
+			counter += step;
 		}
-		*/
 
 		printf("last_chunk? %d\n", block->last_chunk);
 		printf("loop? %d\n", block->loop_flag);
@@ -2842,7 +2831,6 @@ void audio_callback(void *userdata, Uint8 * stream, int len) {
 int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 		int ret = 1;
 		spc_voice_t *v = &state->voices[voice_nr];
-		// brr_block_t *block = v->block;
 
 		/* kon() initializes v->block, so block should never be NULL
 		 * when we get here.
@@ -2869,7 +2857,11 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 		}
 
 		if (ret) {
+			free(v->block);
+			v->block = NULL;
+
 			// printf("v[%d]: decode_next_brr_block(): decoding from $%04X\n", voice_nr, v->cur_addr);
+
 			v->block = decode_brr_block(&state->ram[v->cur_addr]);
 
 			/* Last chunk? Set the ENDX flag */
@@ -2926,6 +2918,9 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 	}
 
 	if (! has_more) {
+		if (state->trace & TRACE_APU_VOICES)
+			printf("Voice [%d] is ending.\n", voice_nr);
+
 		v->enabled = 0;
 
 		// Silence
