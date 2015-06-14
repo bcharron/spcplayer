@@ -1506,6 +1506,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x74: // CMP A, $dp+X
+			dp_addr = get_direct_page_addr(state, operand1);
+			dp_addr += state->regs->x;
+			val = read_byte(state, dp_addr);
+			do_cmp(state, state->regs->a, val);
+			cycles = 4;
+			break;
+
 		case 0x75: // CMP A, $xxyy + X
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->x;
