@@ -1995,6 +1995,19 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 6;
 			break;
 
+		case 0xD7: // MOV [$dp]+Y, A
+		{
+			Uint8 l = get_direct_page_byte(state, operand1);
+			Uint8 h = get_direct_page_byte(state, operand1 + 1);
+
+			abs_addr = make16(h, l);
+			abs_addr += state->regs->y;
+
+			write_byte(state, abs_addr, state->regs->a);
+			cycles = 7;
+		}
+		break;
+
 		case 0xD8: // MOV $xx, X
 			dp_addr = get_direct_page_addr(state, operand1);
 			write_byte(state, dp_addr, state->regs->x);
