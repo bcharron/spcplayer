@@ -470,7 +470,7 @@ void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 
 		/* Writing to ENDx resets its value */
 		case SPC_DSP_ENDX:
-			state->ram[SPC_DSP_ENDX] = 0;
+			state->dsp_registers[SPC_DSP_ENDX] = 0;
 		break;
 
 		default:
@@ -1951,6 +1951,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			// XXX: Is it the other way around?
 			state->regs->y = get_high(result);
 			state->regs->a = get_low(result);
+			adjust_flags(state, state->regs->y);
 			cycles = 9;
 		}
 		break;
@@ -2102,9 +2103,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0xE6: // MOV A, (X)
-			// XXX: Not sure if direct-page flag applies to this operation.
-			val = get_direct_page_byte(state, state->regs->x);
-			state->regs->a = val;
+			state->regs->a = get_direct_page_byte(state, state->regs->x);
 			adjust_flags(state, state->regs->a);
 			cycles = 3;
 			break;
@@ -2556,7 +2555,7 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	// printf("SRCN Addr for voice %d: %02X\n", voice_nr, voice_srcn_addr);
 	voice_srcn = state->dsp_registers[voice_srcn_addr];
 
-	// printf("Instrument for voice %d is %d\n", voice_nr, voice_srcn);
+	// printf("Instrument for voice %d (loop:%d) is %d\n", voice_nr, loop, voice_srcn);
 
 	/*
 	 * Each entry in the 'instrument table' is 4 bytes: one word for the
@@ -2574,7 +2573,7 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	// printf("ptr: %04X   addr: %04X\n", addr_ptr, addr);
 	// printf("loop ptr: %04X   addr: %04X\n", addr_ptr + 2, read_word(state, addr_ptr + 2));
 
-	// printf("Sample addr is %04X\n", addr);
+	// printf("v[%d] Sample addr is %04X\n", voice_nr, addr);
 
 	return(addr);
 }
@@ -2594,6 +2593,7 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 
 	/*
 	Uint8 bytes[9] = { 0xA0, 0xF0, 0x8F, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF };
+	Uint8 bytes[9] = { 12 << 4, '7', '7', '9', '9', '7', '7', '9', '9' };
 
 	ptr = bytes;
 	*/
@@ -2636,16 +2636,11 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 		tmp.i = (ptr[x + 1] >> 4) & 0x0F;
 		dst = tmp.i;
 		dst = (dst << range) >> 1;
-
 		block->samples[2 * x] = dst;
-
-		// XXX: According to apudsp.txt, there should be a final shift
-		// to the right here...
 
 		tmp.i = ptr[x + 1] & 0x0F;
 		dst = tmp.i;
 		dst = (dst << range) >> 1;
-
 		block->samples[2 * x + 1] = dst;
 	}
 
@@ -2839,7 +2834,7 @@ void dump_dsp(spc_state_t *state) {
 				break;
 
 			case 0x5D:
-				printf("SAMLOC: $#%02X\n", dsp[i]);
+				printf("SAMLOC (DIR): $#%02X\n", dsp[i]);
 				break;
 
 			case 0x6C:
@@ -2897,7 +2892,7 @@ int get_voice_pitch(spc_state_t *state, int voice_nr) {
 	return(pitch);
 }
 
-void audio_callback(void *userdata, Uint8 * stream, int len) {
+void audio_callback(void *userdata, Uint8 *stream, int len) {
 	spc_state_t *state = (spc_state_t *) userdata;
 	int available;
 
@@ -2957,15 +2952,12 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 				// XXX: Should the koff() be done here or the caller?
 				ret = 0;
 			}
-
-			free(v->block);
-			v->block = NULL;
 		}
 
-		if (ret) {
-			free(v->block);
-			v->block = NULL;
+		free(v->block);
+		v->block = NULL;
 
+		if (ret) {
 			// printf("v[%d]: decode_next_brr_block(): decoding from $%04X\n", voice_nr, v->cur_addr);
 
 			v->block = decode_brr_block(&state->ram[v->cur_addr]);
@@ -2978,7 +2970,7 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 					ret = 0;
 				}
 
-				state->ram[SPC_DSP_ENDX] |= (1 << voice_nr);
+				state->dsp_registers[SPC_DSP_ENDX] |= (1 << voice_nr);
 			}
 		}
 
@@ -3043,7 +3035,7 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
-		Sint16 out = (INTERP_TABLE[0x0FF - index] * v->prev_brr_samples[0]) >> 10;
+		int out = (INTERP_TABLE[0x0FF - index] * v->prev_brr_samples[0]) >> 10;
 		out       += (INTERP_TABLE[0x1FF - index] * v->prev_brr_samples[1]) >> 10;
 		out       += (INTERP_TABLE[0x100 + index] * v->prev_brr_samples[2]) >> 10;
 		out       += (INTERP_TABLE[0x000 + index] * sample) >> 10;
@@ -3055,6 +3047,8 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		v->prev_brr_samples[0] = v->prev_brr_samples[1];
 		v->prev_brr_samples[1] = v->prev_brr_samples[2];
 		v->prev_brr_samples[2] = sample;
+
+		// sample = out;
 
 		/* Pitch is recalculated at 32kHz */
 		int pitch = get_voice_pitch(state, voice_nr);
@@ -3317,7 +3311,7 @@ int main (int argc, char *argv[])
 	state.out_file = NULL;
 
 	// XXX: debugging
-	// state.out_file = fopen("test.out", "w");
+	// state.out_file = fopen("test.out2", "w");
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
