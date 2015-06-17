@@ -1135,17 +1135,20 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x0B: // ASL $xx
 			dp_addr = get_direct_page_addr(state, operand1);
-			state->regs->psw.f.c = (state->ram[dp_addr] & 0x80) > 0;
-			state->ram[dp_addr] <<= 1;
-			adjust_flags(state, state->ram[dp_addr]);
+			val = read_byte(state, dp_addr);
+			state->regs->psw.f.c = (val & 0x80) > 0;
+			val <<= 1;
+			write_byte(state, dp_addr, val);
+			adjust_flags(state, val);
 			cycles = 4;
 			break;
 
 		case 0x0E: //  TSET1 $xx
 			abs_addr = make16(operand2, operand1);
-			val = state->ram[abs_addr] - state->regs->a;
-			state->ram[abs_addr] |= state->regs->a;
-			adjust_flags(state, val);
+			val = read_byte(state, abs_addr);
+			adjust_flags(state, state->regs->a - val);
+			val |= state->regs->a;
+			write_byte(state, abs_addr, val);
 			cycles = 6;
 			break;
 
@@ -1353,17 +1356,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x4E: // TCLR1 $xxyy
 		{
-			Uint8 l = get_direct_page_byte(state, operand1);
-			Uint8 h = get_direct_page_byte(state, operand1 + 1);
-
-			abs_addr  = make16(h, l);
-
+			abs_addr = make16(operand2, operand1);
 			val = read_byte(state, abs_addr);
 
 			// Only update N/Z, but the same way as do_cmp().
 			adjust_flags(state, state->regs->a - val);
 
-			val = val & (~state->regs->a);
+			val &= ~state->regs->a;
 
 			write_byte(state, abs_addr, val);
 			cycles = 6;
@@ -1391,7 +1390,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x5C: // LSR A
 			state->regs->psw.f.c = state->regs->a & 0x01;
-			state->regs->a = state->regs->a >> 1;
+			state->regs->a >>= 1;
 			adjust_flags(state, state->regs->a);
 			cycles = 2;
 			break;
@@ -1549,8 +1548,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0x75: // CMP A, $xxyy + X
 			abs_addr = make16(operand2, operand1);
 			abs_addr += state->regs->x;
-
-			do_cmp(state, state->regs->a, read_byte(state, abs_addr));
+			val = read_byte(state, abs_addr);
+			do_cmp(state, state->regs->a, val);
 			cycles = 5;
 			break;
 
@@ -1561,7 +1560,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0x7C: // ROR A
-			val  = state->regs->a & 0x01;
+			val = state->regs->a & 0x01;
 			state->regs->a >>= 1;
 			state->regs->a |= ((Uint8) state->regs->psw.f.c << 7);
 			state->regs->psw.f.c = val;
@@ -1601,8 +1600,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			break;
 
 		case 0x84: // ADC A, $dp
-			dp_addr = get_direct_page_addr(state, operand1);
-			val = read_byte(state, dp_addr);
+			val = get_direct_page_byte(state, operand1);
 			state->regs->a = do_adc(state, state->regs->a, val);
 			cycles = 3;
 			break;
@@ -1621,7 +1619,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
-		case 0x8D: // MOV Y,#$xx
+		case 0x8D: // MOV Y, #$xx
 			state->regs->y = operand1;
 			adjust_flags(state, state->regs->y);
 			cycles = 2;
