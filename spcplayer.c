@@ -3263,6 +3263,7 @@ int main (int argc, char *argv[])
 	char *device = NULL;
 	sig_t err;
 	unsigned long next_audio_sample;
+	unsigned long next_print_cycle;
 	int playing = 0;
 
 	if (argc != 2) {
@@ -3572,8 +3573,9 @@ int main (int argc, char *argv[])
 			execute_next(&state);
 			update_counters(&state);
 
-			if ((state.cycle % (2048 * 1000)) <= 6) {
+			if (state.cycle >= next_print_cycle) {
 				printf("Seconds elapsed: %0.1f\n", (float) state.cycle / (2048 * 1000));
+				next_print_cycle = state.cycle + (2048 * 1000);
 			}
 
 		}
