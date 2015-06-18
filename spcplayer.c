@@ -1790,8 +1790,10 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xAB: // INC $xx
 			dp_addr = get_direct_page_addr(state, operand1);
-			state->ram[dp_addr]++;
-			adjust_flags(state, state->ram[dp_addr]);
+			val = read_byte(state, dp_addr);
+			val++;
+			write_byte(state, dp_addr, val);
+			adjust_flags(state, val);
 			cycles = 4;
 			break;
 
@@ -1853,9 +1855,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			// doesn't know how to handle "YA".
 			if (state->regs->y == 0 && state->regs->a == 0)
 				state->regs->psw.f.z = 1;
+			else
+				state->regs->psw.f.z = 0;
 
 			if ((state->regs->y & 0x80) > 0)
 				state->regs->psw.f.n = 1;
+			else
+				state->regs->psw.f.n = 0;
 
 			cycles = 4;
 			break;
@@ -1864,15 +1870,10 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		{
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
-
 			val = read_byte(state, dp_addr);
-
 			val++;
-
-			adjust_flags(state, val);
-
 			write_byte(state, dp_addr, val);
-
+			adjust_flags(state, val);
 			cycles = 5;
 		}
 
@@ -1946,7 +1947,6 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		{
 			Uint16 result = state->regs->y * state->regs->a;
 
-			// XXX: Is it the other way around?
 			state->regs->y = get_high(result);
 			state->regs->a = get_low(result);
 			adjust_flags(state, state->regs->y);
@@ -2044,32 +2044,19 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
 			val = read_byte(state, dp_addr);
-			Uint8 old_flags = state->regs->psw.val;
-			do_cmp(state, state->regs->a, val);
 
-			if (state->regs->psw.f.z) {
-				cycles = 6;
-				state->regs->pc += 3;
-			} else {
+			if (state->regs->a != val) {
 				state->regs->pc += (Sint8) operand2 + 3;
 				cycles = 8;
 
 				if (state->trace & TRACE_CPU_JUMPS)
 					printf("Jumping to 0x%04X\n", state->regs->pc);
-			}
+			} else {
+				cycles = 6;
+				state->regs->pc += 3;
+			} 
 
-			/*
-			// XXX: This will only increment PC by 2, it should be incremented by 3.
-			cycles = branch_if_flag_clear(state, state->regs->psw.f.z, operand2);
-
-			// Account for missing +1 in branch_if_clear.
-			state->regs->pc++;
-			*/
-
-			// Restore the flags because CBNE should not modify them.
-			state->regs->psw.val = old_flags;
 			pc_adjusted = 1;
-			cycles += 2;
 			break;
 
 		case 0xE2: // SET7 $xx (SET1 $dp.7)
