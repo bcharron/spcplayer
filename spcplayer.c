@@ -48,7 +48,7 @@
 
 // How many samples to fill in each pass. This buffer is the queue from which
 // SDL_audio reads from.
-#define AUDIO_BUFFER_SIZE 16000
+#define AUDIO_BUFFER_SIZE 4000
 
 // Don't redefine this, it's just to increase readability :)
 #define SPC_NB_VOICES 8
@@ -83,9 +83,9 @@
 #define SPC_REG_COUNTER2 0xFF
 
 // How many cycles before a timer's internal counter is incremented, based on
-// 2.048 MHz clock
-#define SPC_TIMER_CYCLES_8KHZ 250
-#define SPC_TIMER_CYCLES_64KHZ 31
+// 2.048 MHz clock. In other words: the period of the timer, in cpu cycles.
+#define SPC_TIMER_CYCLES_8KHZ 256
+#define SPC_TIMER_CYCLES_64KHZ 32
 
 #define SPC_DSP_KON 0x4C
 #define SPC_DSP_KOFF 0x5C
@@ -184,7 +184,7 @@ typedef struct spc_voice_s {
 	Uint16 cur_addr;	// Address of current sample block
 	int looping;		// Whether it's in looping mode
 	brr_block_t *block;	// Current block
-	int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
+	unsigned int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
 	Sint16 prev_brr_samples[3];	// Used for interpolation
 } spc_voice_t;
 
@@ -386,13 +386,14 @@ void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 			assert(brr_nr <= 15);
 			assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
 
-			Uint16 out = (INTERP_TABLE[0x00 + index] * sample);
+			// Uint16 out = (INTERP_TABLE[0x00 + index] * sample);
 
 			fprintf(f, "%d\n", sample);
 
 			written_samples++;
 
-			printf("sample: %d   out: %d  brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, out, brr_nr, index, counter, counter);
+			// printf("sample: %d   out: %d  brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, out, brr_nr, index, counter, counter);
+			printf("sample: %d    brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, brr_nr, index, counter, counter);
 
 			counter += step;
 		}
@@ -1016,8 +1017,8 @@ int TIMER_CYCLES[3] = { SPC_TIMER_CYCLES_8KHZ, SPC_TIMER_CYCLES_8KHZ, SPC_TIMER_
 
 /* Go through Timers 0-2. If enough cycles have elapsed, the counter 'ticks' */
 void update_counters(spc_state_t *state) {
-	// 2.048 MHz / 8kHz = 250
-	// 2.048 MHz / 64kHz = 31
+	// 2.048 MHz / 8kHz = 256
+	// 2.048 MHz / 64kHz = 32
 
 	// XXX: Most likely want a single "next_counter" (min of all next_timer
 	// counters) to avoid going through all this every single tick.
@@ -2656,6 +2657,7 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 		dst = (dst << range) >> 1;
 		// printf("dst1: %d\n", dst);
 
+		// XXX: prev probably needs to be maintained in-between BRR blocks.
 		block->samples[2 * x] = do_filter(filter, dst, prev);
 
 		tmp.i = ptr[x] & 0x0F;
@@ -2917,6 +2919,7 @@ int get_voice_pitch(spc_state_t *state, int voice_nr) {
 void audio_callback(void *userdata, Uint8 *stream, int len) {
 	spc_state_t *state = (spc_state_t *) userdata;
 	int available;
+	Sint16 *stream16 = (Sint16 *) stream;
 
 	if (NULL != state->out_file) {
 		// Writing to file, so skip the callback to avoid corrupting audio_buf.
@@ -2926,23 +2929,30 @@ void audio_callback(void *userdata, Uint8 *stream, int len) {
 
 	// printf("audio_callback(len=%d)\n", len);
 
+	// Working 2 bytes at a time
+	len = len / 2;
+
 	available = buffer_get_len(state->audio_buf);
 
 	if (len > available) {
 		printf("audio_callback(): Not enough data to fill buffer!\n");
 		len = available;
+		memset(stream, 0, len * 2);
 	}
 
 	// printf("Filling SDL audio buffer with %d bytes\n", len);
 
-	while (len >= 2) {
+	while (len > 0) {
 		Sint16 sample = buffer_get_one(state->audio_buf);
-		Uint8 *b = (Uint8 *) &sample;
+		// Uint8 *b = (Uint8 *) &sample;
 
-		// XXX: Not sure about order or whether this is the best way to go.
-		*(stream++) = b[1];
-		*(stream++) = b[0];
-		len -= 2;
+		// AUDIO_S16 -> Write bytes in little-endian order
+		// *(stream++) = sample & 0xFF;
+		// *(stream++) = (sample >> 8) & 0xFF;
+
+		// *((Sint16 *) stream) = sample;
+		*stream16++ = sample;
+		len--;
 	}
 }
 
@@ -3046,22 +3056,31 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		// Silence
 		sample = 0;
 	} else {
-		int brr_nr = (v->counter >> 12) & 0xF;
-		int index = (v->counter >> 4) & 0x1FF;
+		unsigned int brr_nr = (v->counter >> 12) & 0xF;
 
-		assert(brr_nr <= 15);
+		// XXX: Using a mask of 0x1FF would go outside the boundary for the tables below.
+		// unsigned int index = (v->counter >> 4) & 0x1FF;
+		unsigned int index = (v->counter >> 4) & 0xFF;
+
+		assert(brr_nr >= 0 && brr_nr <= 15);
 		assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
-		assert(index <= 511);
+		assert(index >= 0 && index <= 255);
 
 		sample = v->block->samples[brr_nr];
 
 		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
-		int out = (INTERP_TABLE[0x0FF - index] * v->prev_brr_samples[0]) >> 10;
-		out       += (INTERP_TABLE[0x1FF - index] * v->prev_brr_samples[1]) >> 10;
-		out       += (INTERP_TABLE[0x100 + index] * v->prev_brr_samples[2]) >> 10;
-		out       += (INTERP_TABLE[0x000 + index] * sample) >> 10;
-		out = out >> 1;
+		int out = (INTERP_TABLE[0x0FF - index] * (int) v->prev_brr_samples[0]) >> 10;
+		out    += (INTERP_TABLE[0x1FF - index] * (int) v->prev_brr_samples[1]) >> 10;
+		out    += (INTERP_TABLE[0x100 + index] * (int) v->prev_brr_samples[2]) >> 10;
+		out    += (INTERP_TABLE[0x000 + index] * (int) sample) >> 10;
+
+		if (out > 65535)
+			out = 65535;
+		else if (out < -65536)
+			out = -65536;
+
+		out     = out >> 1;
 
 		// printf("v[%d]: out: %d\n", voice_nr, out);
 
@@ -3070,7 +3089,7 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		v->prev_brr_samples[1] = v->prev_brr_samples[2];
 		v->prev_brr_samples[2] = sample;
 
-		// sample = out;
+		sample = out;
 
 		/* Pitch is recalculated at 32kHz */
 		int pitch = get_voice_pitch(state, voice_nr);
