@@ -46,7 +46,8 @@
 // How many cycles between audio updates
 #define AUDIO_SAMPLE_PERIOD ((2048 * 1000) / 32000)
 
-// How many samples to fill in each pass
+// How many samples to fill in each pass. This buffer is the queue from which
+// SDL_audio reads from.
 #define AUDIO_BUFFER_SIZE 16000
 
 // Don't redefine this, it's just to increase readability :)
@@ -2567,6 +2568,34 @@ typedef struct nibble_s {
 	int i : 4;
 } nibble_t;
 
+Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
+	Sint16 out;
+
+	switch(filter) {
+		case 0: out = new;
+			break;
+
+		case 1: out = new + (prev[1] * 1) + ((-prev[1] * 1) >> 4);
+			break;
+
+		case 2: out = new + (prev[1] * 2) + ((-prev[1] * 3) >> 5) - prev[0] + ((prev[0] * 1) >> 4);
+			break;
+
+		case 3: out = new + (prev[1] * 2) + ((-prev[1] * 13) >> 6) - prev[0] + ((prev[0] * 3) >> 4);
+			break;
+
+		default:
+			fprintf(stderr, "Invalid filter value, %d. This should never happen.\n", filter);
+			exit(1);
+			break;
+	}
+
+	prev[0] = prev[1];
+	prev[1] = new;
+
+	return(out);
+}
+
 brr_block_t *decode_brr_block(Uint8 *ptr) {
 	Uint8 range;
 	Uint8 filter;
@@ -2575,11 +2604,10 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 	Uint8 loop_code;
 	Uint8 b;
 	brr_block_t *block;
+	Sint16 prev[2] = { 0, 0 };
 
 	/*
-	Uint8 bytes[9] = { 0xA0, 0xF0, 0x8F, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF };
-	Uint8 bytes[9] = { 12 << 4, '7', '7', '9', '9', '7', '7', '9', '9' };
-
+	Uint8 bytes[9] = { 12 << 4, 0x77, 0x77, 0x99, 0x99, 0x77, 0x77, 0x99, 0x99 };
 	ptr = bytes;
 	*/
 
@@ -2598,6 +2626,9 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 	last_chunk = b & 0x01;
 	loop_code = b & 0x03;
 
+	// XXX: Not sure what to do when the range exceeds 12..
+	assert(range <= 12);
+
 	// printf("Range: %d\n", filter);
 	// printf("Block filter: %d\n", filter);
 
@@ -2605,6 +2636,9 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 	block->loop_flag = loop_flag;
 	block->last_chunk = last_chunk;
 	block->loop_code = loop_code;
+
+	// Skip header
+	ptr++;
 
 	/* 
 	 * Go through a constant-width struct in order to sign-extend before *
@@ -2614,25 +2648,28 @@ brr_block_t *decode_brr_block(Uint8 *ptr) {
 		Sint16 dst;
 		nibble_t tmp;
 
-		// printf("Byte %d: %02X\n", x, ptr[x + 1]);
+		// printf("Byte %d: %02X\n", x, ptr[x]);
 
 		// Most Significant Nibble first
-		// Start at ptr[1] because ptr[0] is header
-		tmp.i = (ptr[x + 1] >> 4) & 0x0F;
+		tmp.i = (ptr[x] >> 4) & 0x0F;
 		dst = tmp.i;
 		dst = (dst << range) >> 1;
-		block->samples[2 * x] = dst;
+		// printf("dst1: %d\n", dst);
 
-		tmp.i = ptr[x + 1] & 0x0F;
+		block->samples[2 * x] = do_filter(filter, dst, prev);
+
+		tmp.i = ptr[x] & 0x0F;
 		dst = tmp.i;
 		dst = (dst << range) >> 1;
-		block->samples[2 * x + 1] = dst;
+		block->samples[2 * x + 1] = do_filter(filter, dst, prev);
+		// printf("dst2: %d\n", dst);
 	}
 
-
 	/*
+	printf("Samples: [");
 	for (int x = 0; x < 16; x++)
-		printf("Sample[%d]: %d\n", x, block->samples[x]);
+		printf("%d ", block->samples[x]);
+	printf("]\n");
 	*/
 
 	return(block);
@@ -2839,7 +2876,7 @@ void dump_dsp(spc_state_t *state) {
 
 void usage(char *argv0)
 {
-	printf("Usage: %s <filename.spc>\n", argv0);
+	printf("Usage: %s <filename.spc> [<outfile.raw>]\n", argv0);
 }
 
 void show_menu(void) {
@@ -3055,8 +3092,10 @@ void kon_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].counter = 0;
 
 	/* KON can be called while the voice is already enabled */
-	if (NULL != state->voices[voice_nr].block)
+	if (NULL != state->voices[voice_nr].block) {
 		free(state->voices[voice_nr].block);
+		state->voices[voice_nr].block = NULL;
+	}
 
 	Uint8 *block_ptr = &state->ram[state->voices[voice_nr].cur_addr];
 
@@ -3246,11 +3285,12 @@ void dump_buffer_to_file(spc_state_t *state) {
 	assert(state->out_file);
 
 	for (len = buffer_get_len(state->audio_buf); len > 0; len--) {
+		assert(buffer_get_len(state->audio_buf) == len);
 		sample = buffer_get_one(state->audio_buf);
 		fprintf(state->out_file, "%hd\n", sample);
 	}
 
-	fflush(state->out_file);
+	// fflush(state->out_file);
 }
 
 int main (int argc, char *argv[])
@@ -3266,7 +3306,7 @@ int main (int argc, char *argv[])
 	unsigned long next_print_cycle;
 	int playing = 0;
 
-	if (argc != 2) {
+	if (argc < 2 || argc > 3) {
 		usage(argv[0]);
 		exit(1);
 	}
@@ -3296,8 +3336,10 @@ int main (int argc, char *argv[])
 	state.audio_buf = buffer_create(AUDIO_BUFFER_SIZE);
 	state.out_file = NULL;
 
-	// XXX: debugging
-	// state.out_file = fopen("test.out2", "w");
+	// Dump buffer to a file, if requested.
+	if (argc > 2)
+		printf("Writing output to %s\n", argv[2]);
+		state.out_file = fopen(argv[2], "w");
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -3609,6 +3651,11 @@ int main (int argc, char *argv[])
 				SDL_UnlockAudioDevice(state.audio_dev);
 			}
 		}
+	}
+
+	if (state.out_file) {
+		fflush(state.out_file);
+		fclose(state.out_file);
 	}
 
 	SDL_CloseAudioDevice(state.audio_dev);
