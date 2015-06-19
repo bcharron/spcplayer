@@ -34,7 +34,7 @@ buf_t *buffer_create(int size) {
 		exit(1);
 	}
 
-	buf->data = malloc(size);
+	buf->data = malloc(size * sizeof(Sint16));
 	if (NULL == buf->data) {
 		perror("create_buffer().malloc(buf->data)");
 		exit(1);
