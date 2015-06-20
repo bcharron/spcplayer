@@ -909,20 +909,14 @@ void do_call(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
 
 /* Update the flags based on (operand1 - operand2) */
 void do_cmp(spc_state_t *state, Uint8 operand1, Uint8 operand2) {
-	Sint16 sResult;
 	Uint16 result;
-	Uint8 temp_result;
 
 	result = operand1 - operand2;
-	sResult = (Sint8) operand1 - (Sint8) operand2;
-	state->regs->psw.f.c = !(result > 0xFF);
 
-	// XXX: According to spc700.txt, the V flag is not updated by CMP.
-	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
+	// For some reason, Carry is set "when there has been no borrow"..
+	state->regs->psw.f.c = (operand1 >= operand2);
 
-	temp_result = result & 0x00FF;
-
-	adjust_flags(state, temp_result);
+	adjust_flags(state, result & 0xFF);
 }
 
 Uint8 do_adc(spc_state_t *state, Uint8 dst, Uint8 operand) {
@@ -954,9 +948,15 @@ Uint8 do_sbc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 	sResult = (Sint8) dst - (Sint8) operand - (! state->regs->psw.f.c);
 	ret = result & 0x00FF;
 
-	state->regs->psw.f.c = !(result > 0xFF);
+	// ".. [carry] is set when [...] there has been no borrow."
+	state->regs->psw.f.c = (dst >= operand);
 	state->regs->psw.f.n = ((ret & 0x80) != 0);
 	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
+
+	// According to docs, v and h are already set together. Which is good
+	// because I don't understand what the h flag is supposed to be.
+	state->regs->psw.f.h = state->regs->psw.f.v;
+
 	state->regs->psw.f.z = (ret == 0);
 
 	return(ret);
