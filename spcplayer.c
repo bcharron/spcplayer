@@ -113,11 +113,14 @@ enum trace_flags {
 	TRACE_REGISTER_READS = 0x08,
 	TRACE_CPU_INSTRUCTIONS = 0x10,
 	TRACE_COUNTERS = 0x20,
-	TRACE_DSP_OPS = 0x40
+	TRACE_DSP_OPS = 0x40,
+	TRACE_TIME_ELAPSED = 0x80
 };
 
-#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS | TRACE_COUNTERS | TRACE_DSP_OPS)
+#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS | TRACE_COUNTERS | TRACE_DSP_OPS | TRACE_TIME_ELAPSED)
 
+// Bit order: 7 6 5 4 3 2 1 0
+//            N V P - H - Z C
 typedef union spc_flags_u {
 	struct {
 		int c : 1; // Carry
@@ -152,8 +155,8 @@ typedef struct spc_registers_s {
 
 typedef struct spc_timers_s {
 	unsigned long next_timer[3];	// Next cycle number for this timer to increase
-	Uint8 timer[3];			// Increments by one every time next_timer == cycle
-	Uint8 counter[3];		// Increments by one every time timer[x] == divisor[x]
+	Uint8 timer[3];			// Increments by one every time next_timer == cycle. This is the lower 8-bit counter.
+	Uint8 counter[3];		// Increments by one every time timer[x] == divisor[x]. This is the upper 4-bit counter.
 	Uint8 divisor[3];		// How many times timer[x] must increment before we increment counter
 } spc_timers_t;
 
@@ -317,11 +320,13 @@ uint8_t get_high(uint16_t word)
 opcode_t *convert_opcode_table(void) {
 	opcode_t *table;
 
-	table = malloc(sizeof(opcode_t) * OPCODE_TABLE_LEN);
+	table = malloc(sizeof(opcode_t) * 256);
 	if (NULL == table) {
 		perror("convert_opcode_table() -> malloc()");
 		exit(1);
 	}
+
+	memset(table, 0, sizeof(opcode_t) * 256);
 
 	for (int x = 0; x < OPCODE_TABLE_LEN; x++) {
 		int op = OPCODE_TABLE[x].opcode;
@@ -329,7 +334,15 @@ opcode_t *convert_opcode_table(void) {
 		table[op].opcode = OPCODE_TABLE[x].opcode;
 		table[op].name = OPCODE_TABLE[x].name;
 		table[op].len = OPCODE_TABLE[x].len;
+
+		assert(table[op].len > 0);
 	}
+
+	/*
+	for (int x = 0; x < OPCODE_TABLE_LEN; x++) {
+		printf("[%02X]  %s (%d)\n", x, table[x].name, table[x].len);
+	}
+	*/
 
 	return(table);
 }
@@ -485,7 +498,7 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 	assert(addr >= 0xF0 && addr <= 0xFF);
 
 	if (state->trace & TRACE_REGISTER_WRITES)
-		printf("Register read $%04X [%s]\n", addr, CTL_REGISTER_NAMES[addr - 0xF0]);
+		printf("Register write $%04X [%s]\n", addr, CTL_REGISTER_NAMES[addr - 0xF0]);
 
 	switch(addr) {
 		case 0xF0:	// Test?
@@ -540,15 +553,26 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 		case 0xFA:	// Timers, AKA SPCTMLT, AKA T1DIV
 		case 0xFB:	// T1DIV
 		case 0xFC:	// T2DIV
-			// XXX: Is the timer reset when the user changes the divider?
+		{
+			int timer = addr - 0xFA;
+
+			if (state->trace & TRACE_COUNTERS)
+				printf("Timer %d new divisor: %d\n", timer, val);
+
+			// XXX: It's not clear whether or not the divisor can
+			// change while a timer is enabled. Docs seem to say
+			// timer must be stopped before this value can be changed.
+			// state->timers.divisor[timer] = val;
 			state->ram[addr] = val;
-			break;
+		}
+		break;
 
 		case 0xFD:	// Counters, AKA SPCTMCT, AKA TxOUT
 		case 0xFE:	// T1OUT
 		case 0xFF:	// T2OUT
 			// I don't think these counters can be written to..
 			// state->ram[addr] = val;
+			fprintf(stderr, "Illegal write to %02X\n", addr);
 			break;
 
 		default:
@@ -564,7 +588,8 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 	assert(addr >= 0xF0 && addr <= 0xFF);
 
 	if (state->trace & TRACE_REGISTER_READS)
-		printf("$%04X: Register read $%04X [%s]\n", state->regs->pc, addr, CTL_REGISTER_NAMES[addr - 0xF0]);
+		if (addr != 0xFD)
+			printf("$%04X: Register read $%04X [%s]\n", state->regs->pc, addr, CTL_REGISTER_NAMES[addr - 0xF0]);
 
 	switch(addr) {
 		case 0xF0:	// Test?
@@ -671,7 +696,7 @@ Uint8 get_dsp(spc_state_t *state, Uint8 reg) {
 	return(b);
 }
 
-/* Get the register X for DSP Voice Y */
+/* Get the register 'reg' of DSP Voice 'voice_nr' */
 Uint8 get_dsp_voice(spc_state_t *state, int voice_nr, Uint8 reg) {
 	Uint8 addr;
 	Uint8 result;
@@ -1035,8 +1060,11 @@ void update_counters(spc_state_t *state) {
 			 * for the 0x00 edge case (divisor is 256)
 			 */
 			if (state->timers.timer[timer] == state->timers.divisor[timer]) {
-				// This is a 16 bit counter.
+				// This is a 4-bit counter.
 				state->timers.counter[timer] = (state->timers.counter[timer] + 1) % 16;
+
+				// 8-bit counter is reset when divisor is reached
+				state->timers.timer[timer] = 0;
 
 				if (state->trace & TRACE_COUNTERS)
 					printf("TIMER %d HIT (divisor is %d)\n", timer, state->timers.divisor[timer]);
@@ -1051,6 +1079,9 @@ void clear_timer(spc_state_t *state, int timer) {
 	state->timers.counter[timer] = 0;
 	state->timers.timer[timer] = 0;
 	state->timers.divisor[timer] = state->ram[SPC_REG_TIMER0 + timer];
+
+	if (state->trace & TRACE_COUNTERS)
+		printf("TIMER %d Disabled\n", timer);
 }
 
 /* Enabling a timer through 0xF1 (CONTROL) */
@@ -1061,7 +1092,9 @@ void enable_timer(spc_state_t *state, int timer) {
 
 	// Reload the divisor
 	state->timers.divisor[timer] = state->ram[SPC_REG_TIMER0 + timer];
-	// state->timers.divisor[timer] = value;
+
+	if (state->trace & TRACE_COUNTERS)
+		printf("TIMER %d Enabled with divisor %d\n", timer, state->timers.divisor[timer]);
 }
 
 int execute_instruction(spc_state_t *state, Uint16 addr) {
@@ -2570,7 +2603,7 @@ typedef struct nibble_s {
 } nibble_t;
 
 Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
-	Sint16 out;
+	Sint16 out = 0;
 
 	switch(filter) {
 		case 0: out = new;
@@ -2892,11 +2925,12 @@ void show_menu(void) {
 	printf("sp         Show profiling counters\n");
 	printf("sr         Show CPU Registers\n");
 	printf("ta         Enable/disable ALL tracing \n");
-	printf("td         Enable/disable DSP Operations tracing \n");
-	printf("ti         Enable/disable instruction tracing \n");
-	printf("tj         Enable/disable jump/call tracing \n");
+	printf("td         Enable/disable DSP Operations tracing\n");
+	printf("te         Enable/disable time elapsed tracing\n");
+	printf("ti         Enable/disable instruction tracing\n");
+	printf("tj         Enable/disable jump/call tracing\n");
 	printf("tt         Enable/disable timer/counters tracing\n");
-	printf("tr         Enable/disable register read/write tracing \n");
+	printf("tr         Enable/disable register read/write tracing\n");
 	printf("tv         Enable/disable voice-register tracing\n");
 	printf("w <nr>     Write sample <nr> to disk\n");
 	printf("x <mem>    Examine memory at $<mem> (ie, \"x abcd\")\n");
@@ -2909,6 +2943,9 @@ int get_voice_pitch(spc_state_t *state, int voice_nr) {
 	int pitch;
 
 	pitch_low = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHL);
+
+	// According to the specs, bits 6 and 7 of Pitch(H) are 0, but in practice it doesn't seem to be the case..
+	// pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH) & 0x3F;
 	pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH);
 
 	pitch = make16(pitch_high, pitch_low);
@@ -3363,15 +3400,24 @@ int main (int argc, char *argv[])
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
 
-	/* Initialize timers. Assume they are enabled */
-	// XXX: They might be disabled. Just initialize based on the state in CONTROL..
-	state.timers.counter[0] = state.ram[SPC_REG_COUNTER0];
-	state.timers.counter[1] = state.ram[SPC_REG_COUNTER1];
-	state.timers.counter[2] = state.ram[SPC_REG_COUNTER2];
+	/* Initialize timers */
+	// XXX: Should all timers be enabled on startup?
+	for (int timer = 0; timer < 3; timer++) {
+		int bit = 1 << timer;
+		if (state.ram[SPC_REG_CONTROL] & bit) {
+			enable_timer(&state, timer);
+			printf("Timer %d is enabled\n", timer);
+		} else {
+			clear_timer(&state, timer);
+			printf("Timer %d is disabled\n", timer);
+		}
 
-	enable_timer(&state, 0);
-	enable_timer(&state, 1);
-	enable_timer(&state, 2);
+		state.timers.counter[timer] = state.ram[SPC_REG_COUNTER0 + timer];
+
+	}
+
+	// For debugging purposes when piped through another command.
+	setlinebuf(stdout);
 
 	// XXX: Voices enable should come from KON on startup?
 	for (int x = 0; x < 8; x++)
@@ -3539,6 +3585,13 @@ int main (int argc, char *argv[])
 							}
 							break;
 
+							case 'e' :
+							{
+								state.trace ^= TRACE_TIME_ELAPSED;
+								printf("Time elapsed tracing is now %s.\n", state.trace & TRACE_TIME_ELAPSED ? "enabled" : "disabled");
+							}
+							break;
+
 							case 'i' :
 							{
 								state.trace ^= TRACE_CPU_INSTRUCTIONS;;
@@ -3635,7 +3688,9 @@ int main (int argc, char *argv[])
 			update_counters(&state);
 
 			if (state.cycle >= next_print_cycle) {
-				printf("Seconds elapsed: %0.1f\n", (float) state.cycle / (2048 * 1000));
+				if (state.trace & TRACE_TIME_ELAPSED)
+					printf("Seconds elapsed: %0.1f\n", (float) state.cycle / (2048 * 1000));
+
 				next_print_cycle = state.cycle + (2048 * 1000);
 			}
 

@@ -1,6 +1,6 @@
 #include "opcodes.h"
 
-opcode_t OPCODE_TABLE[256] = {
+opcode_t OPCODE_TABLE[] = {
 	{ "ADC A,(X)", 0x86, 1 },
 	{ "ADC A,[$%02X+X]", 0x87, 2 },
 	{ "ADC A,#$%02X", 0x88, 2 },
@@ -213,7 +213,22 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "SBC (X),(Y)", 0xB9, 1 },
 	{ "SBC $%02X,#$%02X", 0xB8, 3 },
 	{ "SBC $%02X,$%02X", 0xA9, 3 },
-	{ "TCALL $%02X <-- fucked", 0x01, 1 },
+	{ "TCALL 0 [$FFDE]", 0x01, 1 },
+	{ "TCALL 1 [$FFDC]", 0x11, 1 },
+	{ "TCALL 2 [$FFDA]", 0x21, 1 },
+	{ "TCALL 3 [$FFD8]", 0x31, 1 },
+	{ "TCALL 4 [$FFD6]", 0x41, 1 },
+	{ "TCALL 5 [$FFD4]", 0x51, 1 },
+	{ "TCALL 6 [$FFD2]", 0x61, 1 },
+	{ "TCALL 7 [$FFD0]", 0x71, 1 },
+	{ "TCALL 8 [$FFCE]", 0x81, 1 },
+	{ "TCALL 9 [$FFCC]", 0x91, 1 },
+	{ "TCALL 10 [$FFCA]", 0xA1, 1 },
+	{ "TCALL 11 [$FFC8]", 0xB1, 1 },
+	{ "TCALL 12 [$FFC6]", 0xC1, 1 },
+	{ "TCALL 13 [$FFC4]", 0xD1, 1 },
+	{ "TCALL 14 [$FFC2]", 0xE1, 1 },
+	{ "TCALL 15 [$FFC0]", 0xF1, 1 },
 	{ "TSET1 $%02X%02X", 0x0E, 3 },
 	{ "TCLR1 $%02X", 0x4E, 3 },
 	{ "CALL $%02X%02X", 0x3F, 3 },
@@ -228,7 +243,7 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "POP A", 0xAE, 1 },
 	{ "POP X", 0xCE, 1 },
 	{ "POP Y", 0xEE, 1 },
-	{ "NOP """, 0x00, 1 },
+	{ "NOP", 0x00, 1 },
 	{ "BRK """, 0x0F, 1 },
 	{ "RET """, 0x6F, 1 },
 	{ "RETI """, 0x7F, 1 },
@@ -243,3 +258,5 @@ opcode_t OPCODE_TABLE[256] = {
 	{ "SLEEP """, 0xEF, 1 },
 	{ "STOP """, 0xFF, 1 },
 };
+
+int OPCODE_TABLE_LEN = (sizeof(OPCODE_TABLE) / sizeof(opcode_t));
