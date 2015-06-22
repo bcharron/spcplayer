@@ -1298,6 +1298,15 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x38: // AND $dp, #$imm
+			dp_addr = get_direct_page_addr(state, operand2);
+			val = read_byte(state, dp_addr);
+			val &= operand1;
+			write_byte(state, dp_addr, val);
+			adjust_flags(state, val);
+			cycles = 5;
+			break;
+
 		case 0x3A: // INCW $dp
 		{
 			dp_addr = get_direct_page_addr(state, operand1);
@@ -2945,8 +2954,8 @@ int get_voice_pitch(spc_state_t *state, int voice_nr) {
 	pitch_low = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHL);
 
 	// According to the specs, bits 6 and 7 of Pitch(H) are 0, but in practice it doesn't seem to be the case..
-	// pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH) & 0x3F;
-	pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH);
+	pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH) & 0x3F;
+	// pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH);
 
 	pitch = make16(pitch_high, pitch_low);
 
@@ -3051,7 +3060,9 @@ Sint16 get_next_mixed_sample(spc_state_t *state) {
 	Sint16 samples[SPC_NB_VOICES];
 	int ret = 0;
 
-	for (int voice_nr = 0; voice_nr < SPC_NB_VOICES; voice_nr++) {
+	// int voice_nr = 7;
+	for (int voice_nr = 0; voice_nr < SPC_NB_VOICES; voice_nr++)
+	{
 		spc_voice_t *v = &state->voices[voice_nr];
 
 		if (v->enabled) {
