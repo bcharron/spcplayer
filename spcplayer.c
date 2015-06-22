@@ -123,14 +123,14 @@ enum trace_flags {
 //            N V P - H - Z C
 typedef union spc_flags_u {
 	struct {
-		int c : 1; // Carry
-		int z : 1; // Zero
-		int i : 1; // Interrupt Enable
-		int h : 1; // Half-Carry
-		int b : 1; // Break
-		int p : 1; // Direct Page
-		int v : 1; // Overflow
-		int n : 1; // Negative
+		unsigned int c : 1; // Carry
+		unsigned int z : 1; // Zero
+		unsigned int i : 1; // Interrupt Enable
+		unsigned int h : 1; // Half-Carry
+		unsigned int b : 1; // Break
+		unsigned int p : 1; // Direct Page
+		unsigned int v : 1; // Overflow
+		unsigned int n : 1; // Negative
 	} f;
 	Uint8 val;
 } spc_flags_t;
