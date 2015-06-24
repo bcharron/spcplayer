@@ -2333,6 +2333,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 3;
 			break;
 
+		case 0xFA: // MOV $dp, $dp
+			val = get_direct_page_byte(state, operand1);
+			dp_addr = get_direct_page_addr(state, operand2);
+			write_byte(state, dp_addr, val);
+			cycles = 5;
+			break;
+
 		case 0xFB: // MOVZ Y, $xx + X
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
