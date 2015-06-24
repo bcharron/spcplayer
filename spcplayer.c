@@ -1803,6 +1803,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x9C: // DEC A
+			state->regs->a--;
+			adjust_flags(state, state->regs->a);
+			cycles = 2;
+			break;
+
 		case 0x9E: // DIV YA, X
 		{
 			// XXX: Not sure at all about this one.
