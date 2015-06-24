@@ -1207,6 +1207,11 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x0D: // PUSH PSW
+			do_push(state, state->regs->psw.val);
+			cycles = 4;
+			break;
+
 		case 0x0E: //  TSET1 $xx
 			abs_addr = make16(operand2, operand1);
 			val = read_byte(state, abs_addr);
@@ -1797,13 +1802,10 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
-		/*
-		XXX: Need to get the exact binary output for PSW.
 		case 0x8E: // POP PSW
-			state->regs->psw = do_pop(state);
+			state->regs->psw.val = do_pop(state);
 			cycles = 4;
 			break;
-		*/
 
 		case 0x8F: // MOV $dp, #$xx
 			dp_addr = get_direct_page_addr(state, operand2);
