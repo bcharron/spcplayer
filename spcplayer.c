@@ -1953,6 +1953,15 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xAC: // INC $xxyy
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			val++;
+			write_byte(state, abs_addr, val);
+			adjust_flags(state, val);
+			cycles = 5;
+			break;
+
 		case 0xAD: // CMP Y, #$xx
 			do_cmp(state, state->regs->y, operand1);
 			cycles = 2;
