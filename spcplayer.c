@@ -1662,6 +1662,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 5;
 			break;
 
+		case 0x76: // CMP A, $xxyy + Y
+			abs_addr = make16(operand2, operand1);
+			abs_addr += state->regs->y;
+			val = read_byte(state, abs_addr);
+			do_cmp(state, state->regs->a, val);
+			cycles = 5;
+			break;
+
 		case 0x78: // CMP $dp, #imm
 			val = get_direct_page_byte(state, operand2);
 			do_cmp(state, val, operand1);
