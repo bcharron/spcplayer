@@ -1235,6 +1235,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x14: // OR A, $dp + X
+			val = get_direct_page_byte(state, operand1 + state->regs->x);
+			state->regs->a |= val;
+			adjust_flags(state, state->regs->a);
+			cycles = 4;
+			break;
+
 		case 0x1B: // ASL $xx + X
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
