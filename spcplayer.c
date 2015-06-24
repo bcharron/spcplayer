@@ -1654,6 +1654,17 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x8B: // DEC $dp
+		{
+			dp_addr = get_direct_page_addr(state, operand1);
+			val = read_byte(state, dp_addr);
+			val--;
+			write_byte(state, dp_addr, val);
+			adjust_flags(state, val);
+			cycles = 4;
+		}
+		break;
+
 		case 0x8C: // DEC $xxxx
 			abs_addr = make16(operand2, operand1);
 			val = read_byte(state, abs_addr);
