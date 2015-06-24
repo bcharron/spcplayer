@@ -1920,6 +1920,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			adjust_flags(state, val);
 			cycles = 5;
 		}
+		break;
 
 		case 0xBC: // INC A
 			state->regs->a++;
@@ -2139,6 +2140,9 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0xE7: // MOV A, [$dp+X]
 		{
+			// XXX: Not sure if this case ever comes up.
+			assert(operand1 + state->regs->x < 0xff);
+
 			dp_addr = get_direct_page_addr(state, operand1);
 			dp_addr += state->regs->x;
 
@@ -3458,7 +3462,7 @@ int main (int argc, char *argv[])
 			SDL_PauseAudioDevice(state.audio_dev, 1);
 			playing = 0;
 
-			// dump_registers(state.regs);
+			dump_registers(state.regs);
 			dump_instruction(state.regs->pc, state.ram);
 
 			printf("> ");
@@ -3686,8 +3690,10 @@ int main (int argc, char *argv[])
 			}
 		} else {
 			// dump_registers(state.regs);
-			if (state.trace & TRACE_CPU_INSTRUCTIONS)
+			if (state.trace & TRACE_CPU_INSTRUCTIONS) {
+				printf("A:%02X  X:%02X  Y:%02X   ", state.regs->a, state.regs->x, state.regs->y);
 				dump_instruction(state.regs->pc, state.ram);
+			}
 
 			/*
 			if (is_waiting_on_timer(&state.ram[state.regs->pc])) {
