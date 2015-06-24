@@ -90,7 +90,11 @@
 #define SPC_DSP_KON 0x4C
 #define SPC_DSP_KOFF 0x5C
 #define SPC_DSP_DIR 0x5D
+#define SPC_DSP_FLG 0x6C
 #define SPC_DSP_ENDX 0x7C
+
+#define SPC_FLG_MUTE (1 << 6)
+#define SPC_FLG_RESET (1 << 7)
 
 // Per-voice registers
 #define SPC_DSP_VxPITCHL 0x02
@@ -448,7 +452,7 @@ Uint8 read_counter(spc_state_t *state, Uint16 addr) {
 /* Called when a register is being written to */
 void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 	if (state->trace & (TRACE_REGISTER_WRITES|TRACE_DSP_OPS))
-		printf("[DSP] Writing %02X into register %02X (%s)\n", val, reg, DSP_NAMES[reg % 127]);
+		printf("%0.1f $%04X [DSP] Writing %02X into register %02X (%s)\n", (float) state->cycle / (2048 * 1000), state->regs->pc, val, reg, DSP_NAMES[reg % 127]);
 
 	state->dsp_registers[reg] = val;
 
@@ -483,10 +487,23 @@ void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
 		}
 		break;
 
+		case SPC_DSP_FLG:
+		{
+			if (val & SPC_FLG_RESET) {
+				if (state->trace & TRACE_APU_VOICES)
+					printf("Disabling all voices\n");
+
+				for (int x = 0; x < 8; x++) {
+					koff_voice(state, x);
+				}
+			}
+		}
+		break;
+
 		/* Writing to ENDx resets its value */
 		case SPC_DSP_ENDX:
 			state->dsp_registers[SPC_DSP_ENDX] = 0;
-		break;
+			break;
 
 		default:
 			break;
@@ -588,7 +605,7 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 	assert(addr >= 0xF0 && addr <= 0xFF);
 
 	if (state->trace & TRACE_REGISTER_READS)
-		if (addr != 0xFD)
+		if (addr != 0xFD && addr != 0xF7)
 			printf("$%04X: Register read $%04X [%s]\n", state->regs->pc, addr, CTL_REGISTER_NAMES[addr - 0xF0]);
 
 	switch(addr) {
@@ -841,6 +858,8 @@ void instr_or(spc_state_t *state, Uint8 *operand1, Uint8 operand2)
 Uint8 do_rol(spc_state_t *state, Uint8 val) {
 	Uint8 new_carry = (val & 0x80) > 0;
 
+	assert(new_carry == 0x00 || new_carry == 0x01);
+
 	val <<= 1;
 	val |= state->regs->psw.f.c;
 
@@ -948,7 +967,7 @@ Uint8 do_sbc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 	sResult = (Sint8) dst - (Sint8) operand - (! state->regs->psw.f.c);
 	ret = result & 0x00FF;
 
-	// ".. [carry] is set when [...] there has been no borrow."
+	// In substractions, ".. [carry] is set when [...] there has been no borrow."
 	state->regs->psw.f.c = (dst >= operand);
 	state->regs->psw.f.n = ((ret & 0x80) != 0);
 	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
@@ -975,7 +994,9 @@ Uint16 do_sub_ya(spc_state_t *state, Uint16 val) {
 	sResult = ya - val;
 	ret = (Uint16) (result & 0xFFFF);
 
-	state->regs->psw.f.c = !(result > 0xFFFF);
+	// In substractions, ".. [carry] is set when [...] there has been no borrow."
+	state->regs->psw.f.c = (ya >= val);
+
 	state->regs->psw.f.n = ((ret & 0x80) != 0);
 	state->regs->psw.f.v = (sResult < -32768 || sResult > 32767);
 	state->regs->psw.f.z = (ret == 0);
@@ -1141,6 +1162,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			state->regs->a |= val;
 			adjust_flags(state, state->regs->a);
 			cycles = 3;
+			break;
+
+		case 0x05: // OR A, $xxyy
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			state->regs->a |= val;
+			adjust_flags(state, state->regs->a);
+			cycles = 4;
 			break;
 
 		case 0x08: // OR A, #$xx
@@ -3126,6 +3155,10 @@ Sint16 get_next_mixed_sample(spc_state_t *state) {
 	else if (ret < -65536)
 		ret = -65536;
 
+	if (state->dsp_registers[SPC_DSP_FLG] & SPC_FLG_MUTE) {
+		ret = 0;
+	}
+
 	return(ret);
 }
 
@@ -3538,6 +3571,8 @@ int main (int argc, char *argv[])
 				{
 					printf("Continue.\n");
 					g_do_break = 0;
+					execute_next(&state);
+					update_counters(&state);
 				}
 				break;
 
