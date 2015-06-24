@@ -8,7 +8,7 @@ opcode_t OPCODE_TABLE[] = {
 	{ "ADCZ A,$%02X+X", 0x94, 2 },
 	{ "ADC A,$%02X%02X+Y", 0x96, 3 },
 	{ "ADC A,[$%02X]+Y", 0x97, 2 },
-	{ "ADC A,$%02X", 0x85, 3 },
+	{ "ADC A,$%02X%02X", 0x85, 3 },
 	{ "ADCZ A,$%02X", 0x84, 2 },
 	{ "ADC $%02X,#$%02X", 0x98, 3 },
 	{ "ADC $%02X,$%02X", 0x89, 3 },
