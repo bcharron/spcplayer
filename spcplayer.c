@@ -1228,6 +1228,23 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x1F: // JMP [$xxyy + x]
+		{
+			abs_addr = make16(operand2, operand1);
+			abs_addr += state->regs->x;
+
+			int l = read_byte(state, abs_addr);
+			int h = read_byte(state, abs_addr + 1);
+
+			state->regs->pc = make16(h, l);
+			pc_adjusted = 1;
+			cycles = 6;
+
+			if (state->trace & TRACE_CPU_JUMPS)
+				printf("Jumping to 0x%04X\n", state->regs->pc);
+		}
+		break;
+
 		case 0x20: // CLRP
 			state->regs->psw.f.p = 0;
 			cycles = 2;
