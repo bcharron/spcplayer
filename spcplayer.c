@@ -1435,6 +1435,21 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x49: // EOR $dd, $ds
+		{
+			Uint8 dd, ds;
+
+			ds = get_direct_page_byte(state, operand1);
+			dd = get_direct_page_byte(state, operand2);
+
+			dd ^= ds;
+			dp_addr = get_direct_page_addr(state, operand2);
+			write_byte(state, dp_addr, dd);
+			adjust_flags(state, dd);
+			cycles = 6;
+		}
+		break;
+
 		case 0x4B: // LSRZ $xx
 			dp_addr = get_direct_page_addr(state, operand1);
 			val = read_byte(state, dp_addr);
