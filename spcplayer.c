@@ -1734,6 +1734,21 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x89: // ADC $dp, $dp
+		{
+			Uint8 dd, ds;
+
+			ds = get_direct_page_byte(state, operand1);
+			dd = get_direct_page_byte(state, operand2);
+
+			val = do_adc(state, dd, ds);
+
+			dp_addr = get_direct_page_addr(state, operand2);
+			write_byte(state, dp_addr, val);
+			cycles = 6;
+		}
+		break;
+
 		case 0x8B: // DEC $dp
 		{
 			dp_addr = get_direct_page_addr(state, operand1);
