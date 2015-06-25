@@ -97,6 +97,8 @@
 #define SPC_FLG_RESET (1 << 7)
 
 // Per-voice registers
+#define SPC_DSP_VxVOLL 0x00
+#define SPC_DSP_VxVOLR 0x01
 #define SPC_DSP_VxPITCHL 0x02
 #define SPC_DSP_VxPITCHH 0x03
 #define SPC_DSP_VxSCRN 0x04
@@ -451,6 +453,9 @@ Uint8 read_counter(spc_state_t *state, Uint16 addr) {
 
 /* Called when a register is being written to */
 void dsp_register_write(spc_state_t *state, Uint8 reg, Uint8 val) {
+	// 128-255 is a mirror I think, but I want to catch ROMs doing this, if any.
+	assert(reg <= 127);
+
 	if (state->trace & (TRACE_REGISTER_WRITES|TRACE_DSP_OPS))
 		printf("%0.1f $%04X [DSP] Writing %02X into register %02X (%s)\n", (float) state->cycle / (2048 * 1000), state->regs->pc, val, reg, DSP_NAMES[reg % 127]);
 
@@ -3311,6 +3316,17 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		int step = 0x1000;
 		step = pitch;
 		v->counter += step;
+
+		Uint8 voll = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLL);
+		// printf("VOLL: %hhu\n", voll);
+		// voll = 128;
+
+		float pct = (float) voll / 128;
+		float fsample = sample;
+		fsample = fsample * pct;
+
+		sample = fsample;
+		// printf("pct: %0.2f  fsample: %0.2f  sample: %hd\n", pct, fsample, sample);
 	}
 
 	return(sample);
@@ -3873,7 +3889,7 @@ int main (int argc, char *argv[])
 				if (state.trace & TRACE_TIME_ELAPSED)
 					printf("Seconds elapsed: %0.1f\n", (float) state.cycle / (2048 * 1000));
 
-				next_print_cycle = state.cycle + (2048 * 1000);
+				next_print_cycle = state.cycle + (2048 * 1000) / 10;
 			}
 
 		}
