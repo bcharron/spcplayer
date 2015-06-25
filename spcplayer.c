@@ -1516,6 +1516,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			pc_adjusted = 1;
 			break;
 
+		case 0x54: // EORZ A, $xx + X
+			val = get_direct_page_byte(state, operand1 + state->regs->x);
+			state->regs->a ^= val;
+			adjust_flags(state, state->regs->a);
+			cycles = 4;
+			break;
+
 		case 0x5C: // LSR A
 			state->regs->psw.f.c = state->regs->a & 0x01;
 			state->regs->a >>= 1;
