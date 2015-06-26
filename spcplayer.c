@@ -3088,7 +3088,10 @@ void dump_dsp(spc_state_t *state) {
 
 void usage(char *argv0)
 {
-	printf("Usage: %s <filename.spc> [<outfile.raw>]\n", argv0);
+	printf("Usage: %s [-h] [-s <secs>] <filename.spc>\n", argv0);
+	printf("Where:\n");
+	printf("-o <file> 	Write samples to <file>\n");
+	printf("-s <secs> 	Skip <secs> seconds from the start\n");
 }
 
 void show_menu(void) {
@@ -3543,6 +3546,41 @@ void dump_buffer_to_file(spc_state_t *state) {
 	// fflush(state->out_file);
 }
 
+typedef struct options_s {
+	float sim;
+	char *output_file;
+} options_t;
+
+int parse_argv(int argc, char *argv[], options_t *options) {
+	int ch;
+
+	assert(options != NULL);
+
+	while ((ch = getopt(argc, argv, "ho:s:")) != -1) {
+		switch(ch) {
+			case 'h':
+				usage(argv[0]);
+				exit(0);
+				break;
+
+			case 'o': // output file
+				options->output_file = optarg;
+				break;
+
+			case 's': // skip seconds
+				options->sim = strtof(optarg, NULL);
+				break;
+
+			default:
+				fprintf(stderr, "Unknown option, %c\n", ch);
+				exit(1);
+				break;
+		}
+	}
+
+	return(optind);
+}
+
 int main (int argc, char *argv[])
 {
 	spc_file_t *spc_file;
@@ -3555,9 +3593,23 @@ int main (int argc, char *argv[])
 	unsigned long next_audio_sample;
 	unsigned long next_print_cycle;
 	int playing = 0;
+	unsigned long skip_cycles;
+	options_t opts;
+	char *argv0 = argv[0];
 
-	if (argc < 2 || argc > 3) {
-		usage(argv[0]);
+	// Initialize default options
+	opts.sim = 0.0;
+	opts.output_file = NULL;
+
+	int optind = parse_argv(argc, argv, &opts);
+
+	skip_cycles = opts.sim * 2048 * 1000;
+
+	argc -= optind;
+	argv += optind;
+
+	if (argc != 1) {
+		usage(argv0);
 		exit(1);
 	}
 
@@ -3570,9 +3622,9 @@ int main (int argc, char *argv[])
 
 	g_opcode_table = convert_opcode_table();
 
-	spc_file = read_spc_file(argv[1]);
+	spc_file = read_spc_file(argv[0]);
 	if (spc_file == NULL) {
-		fprintf(stderr, "Error loading file %s\n", argv[1]);
+		fprintf(stderr, "Error loading file %s\n", argv[0]);
 		exit(1);
 	}
 
@@ -3587,9 +3639,9 @@ int main (int argc, char *argv[])
 	state.out_file = NULL;
 
 	// Dump buffer to a file, if requested.
-	if (argc > 2)
-		printf("Writing output to %s\n", argv[2]);
-		state.out_file = fopen(argv[2], "w");
+	if (opts.output_file != NULL)
+		printf("Writing output to %s\n", opts.output_file);
+		state.out_file = fopen(opts.output_file, "w");
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -3918,9 +3970,12 @@ int main (int argc, char *argv[])
 			}
 
 			if (! g_do_break) {
-				SDL_LockAudioDevice(state.audio_dev);
-				buffer_add_one(state.audio_buf, s);
-				SDL_UnlockAudioDevice(state.audio_dev);
+				if (state.cycle < skip_cycles) {
+				} else {
+					SDL_LockAudioDevice(state.audio_dev);
+					buffer_add_one(state.audio_buf, s);
+					SDL_UnlockAudioDevice(state.audio_dev);
+				}
 			}
 		}
 	}
