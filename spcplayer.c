@@ -48,7 +48,7 @@
 
 // How many samples to fill in each pass. This buffer is the queue from which
 // SDL_audio reads from.
-#define AUDIO_BUFFER_SIZE 4000
+#define AUDIO_BUFFER_SIZE 8000
 
 // Don't redefine this, it's just to increase readability :)
 #define SPC_NB_VOICES 8
@@ -97,11 +97,16 @@
 #define SPC_FLG_RESET (1 << 7)
 
 // Per-voice registers
-#define SPC_DSP_VxVOLL 0x00
-#define SPC_DSP_VxVOLR 0x01
+#define SPC_DSP_VxVOLL   0x00
+#define SPC_DSP_VxVOLR   0x01
 #define SPC_DSP_VxPITCHL 0x02
 #define SPC_DSP_VxPITCHH 0x03
-#define SPC_DSP_VxSCRN 0x04
+#define SPC_DSP_VxSCRN   0x04
+#define SPC_DSP_VxADSR1  0x05
+#define SPC_DSP_VxADSR2  0x06
+#define SPC_DSP_VxGAIN   0x07
+#define SPC_DSP_VxENVX   0x08
+#define SPC_DSP_VxOUTX   0x09
 
 enum error_values {
 	SUCCESS = 0,
@@ -3177,7 +3182,7 @@ void audio_callback(void *userdata, Uint8 *stream, int len) {
 	available = buffer_get_len(state->audio_buf);
 
 	if (len > available) {
-		printf("audio_callback(): Not enough data to fill buffer!\n");
+		printf("audio_callback(): Not enough data to fill buffer! (Have: %d  Want: %d)\n", available, len);;
 		len = available;
 		memset(stream, 0, len * 2);
 	}
@@ -3252,31 +3257,55 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 }
 
 /* Get the next sample for all samples and mix them together */
-Sint16 get_next_mixed_sample(spc_state_t *state) {
-	int ret = 0;
+void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
+	int lret = 0, rret = 0;
 
 	for (int voice_nr = 0; voice_nr < SPC_NB_VOICES; voice_nr++)
 	{
 		spc_voice_t *v = &state->voices[voice_nr];
 
 		if (v->enabled) {
-			ret += get_next_sample(state, voice_nr);
+			Sint16 s = get_next_sample(state, voice_nr);
+
+			Uint8 voll = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLL);
+
+			// Normalize before multiplying
+			float pct = (float) voll / 128;
+			lret += roundf(s * pct);
+
+			// printf("Before: %hd  After: %d  vol: %hhd (%0.2f)\n", s, (int) roundf(fsample), voll, pct);
+
+			Uint8 volr = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLR);
+
+			// Normalize before multiplying
+			pct = (float) volr / 128;
+			rret += roundf(s * pct);
 		}
 	}
 
-	if (ret > 65535) {
-		printf("Clipping (+)\n");
-		ret = 65535;
-	} else if (ret < -65536) {
-		printf("Clipping (-)\n");
-		ret = -65536;
+	if (lret > 65535) {
+		printf("Clipping (L+)\n");
+		lret = 65535;
+	} else if (lret < -65536) {
+		printf("Clipping (L-)\n");
+		lret = -65536;
+	}
+
+	if (rret > 65535) {
+		printf("Clipping (R+)\n");
+		rret = 65535;
+	} else if (lret < -65536) {
+		printf("Clipping (R-)\n");
+		rret = -65536;
 	}
 
 	if (state->dsp_registers[SPC_DSP_FLG] & SPC_FLG_MUTE) {
-		ret = 0;
+		lret = 0;
+		rret = 0;
 	}
 
-	return(ret);
+	*left = lret;
+	*right = rret;
 }
 
 /* Get the next sample for voice 'voice_nr' */
@@ -3340,17 +3369,6 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		int step = 0x1000;
 		step = pitch;
 		v->counter += step;
-
-		Uint8 voll = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLL);
-		// printf("VOLL: %hhu\n", voll);
-		// voll = 128;
-
-		float pct = (float) voll / 128;
-		float fsample = sample;
-		fsample = fsample * pct;
-
-		sample = fsample;
-		// printf("pct: %0.2f  fsample: %0.2f  sample: %hd\n", pct, fsample, sample);
 	}
 
 	return(sample);
@@ -3439,7 +3457,7 @@ int init_audio(char *wanted_device, spc_state_t *state) {
 	desired.freq = 32000;		// SPC Samples are played at 32kHz, I believe.
 	desired.format = AUDIO_S16;	// SPC samples are signed 16-bit samples
 	desired.samples = 1024;		// Queue up to about half a second's worth of samples.
-	desired.channels = 1;		// XXX: Not sure yet if mono or stereo..
+	desired.channels = 2;
 	desired.callback = audio_callback;
 	desired.userdata = state;
 
@@ -3455,10 +3473,14 @@ int init_audio(char *wanted_device, spc_state_t *state) {
 
 	// XXX: Am I expected to substract 2 from the device ID to identify the right one?
 	printf("SDL_OpenAudioDevice(): Obtained device: %d (%s)\n", dev, SDL_GetAudioDeviceName(dev - 2, 0));
-
 	printf("SDL_OpenAudioDevice(): Obtained freq: %d\n", obtained.freq);
 	printf("SDL_OpenAudioDevice(): Obtained format: %d (AUDIO_S16 == %d)\n", obtained.format, AUDIO_S16);
 	printf("SDL_OpenAudioDevice(): Obtained samples: %d\n", obtained.samples);
+	printf("SDL_OpenAudioDevice(): Obtained channels: %d\n", obtained.channels);
+
+	assert(desired.format == obtained.format);
+	assert(desired.channels == obtained.channels);
+	assert(desired.freq == obtained.freq);
 
 	return(dev);
 }
@@ -3560,6 +3582,8 @@ void dump_buffer_to_file(spc_state_t *state) {
 
 	for (len = buffer_get_len(state->audio_buf); len > 0; len--) {
 		assert(buffer_get_len(state->audio_buf) == len);
+		// XXX: Not sure if Baudline expects one or two samples per
+		// line.
 		sample = buffer_get_one(state->audio_buf);
 		fprintf(state->out_file, "%hd\n", sample);
 	}
@@ -3970,7 +3994,8 @@ int main (int argc, char *argv[])
 		if (state.cycle >= next_audio_sample) {
 			next_audio_sample = state.cycle + AUDIO_SAMPLE_PERIOD;
 			// printf("[%lu] Audio sample\n", state.cycle);
-			Sint16 s = get_next_mixed_sample(&state);
+			Sint16 left, right;
+			get_next_mixed_sample(&state, &left, &right);
 
 			while (buffer_is_full(state.audio_buf) && ! g_do_break) {
 				if (! playing) {
@@ -3991,10 +4016,10 @@ int main (int argc, char *argv[])
 			}
 
 			if (! g_do_break) {
-				if (state.cycle < skip_cycles) {
-				} else {
+				if (state.cycle >= skip_cycles) {
 					SDL_LockAudioDevice(state.audio_dev);
-					buffer_add_one(state.audio_buf, s);
+					buffer_add_one(state.audio_buf, left);
+					buffer_add_one(state.audio_buf, right);
 					SDL_UnlockAudioDevice(state.audio_dev);
 				}
 			}
