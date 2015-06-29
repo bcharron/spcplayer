@@ -208,7 +208,7 @@ opcode_t OPCODE_TABLE[] = {
 	{ "SBCZ A,$%02X+X", 0xB4, 2 },
 	{ "SBC A,$%02X+Y", 0xB6, 3 },
 	{ "SBC A,[$%02X]+Y", 0xB7, 2 },
-	{ "SBC A,$%02X", 0xA5, 3 },
+	{ "SBC A,$%02X%02X", 0xA5, 3 },
 	{ "SBCZ A,$%02X", 0xA4, 2 },
 	{ "SBC (X),(Y)", 0xB9, 1 },
 	{ "SBC $%02X,#$%02X", 0xB8, 3 },

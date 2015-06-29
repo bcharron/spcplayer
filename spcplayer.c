@@ -1990,6 +1990,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		case 0xA4: // SBC A, $dp
 			val = get_direct_page_byte(state, operand1);
 			state->regs->a = do_sbc(state, state->regs->a, val);
+			cycles = 4;
+			break;
+
+		case 0xA5: // SBC A, $xxyy
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			state->regs->a = do_sbc(state, state->regs->a, val);
 			cycles = 3;
 			break;
 
