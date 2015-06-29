@@ -1328,6 +1328,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 2;
 			break;
 
+		case 0x25: // AND A, $xxyy
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			state->regs->a &= val;
+			adjust_flags(state, state->regs->a);
+			cycles = 4;
+			break;
+
 		case 0x28: // AND A, #$xx
 			state->regs->a &= operand1;
 			adjust_flags(state, state->regs->a);
@@ -3239,10 +3247,13 @@ Sint16 get_next_mixed_sample(spc_state_t *state) {
 		}
 	}
 
-	if (ret > 65535)
+	if (ret > 65535) {
+		printf("Clipping (+)\n");
 		ret = 65535;
-	else if (ret < -65536)
+	} else if (ret < -65536) {
+		printf("Clipping (-)\n");
 		ret = -65536;
+	}
 
 	if (state->dsp_registers[SPC_DSP_FLG] & SPC_FLG_MUTE) {
 		ret = 0;
