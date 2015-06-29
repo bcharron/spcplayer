@@ -725,7 +725,7 @@ Uint8 get_dsp_voice(spc_state_t *state, int voice_nr, Uint8 reg) {
 
 	addr = voice_nr * 0x10 + reg;
 
-	result = get_dsp(state, reg);
+	result = get_dsp(state, addr);
 
 	return(result);
 }
@@ -3228,22 +3228,15 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 
 /* Get the next sample for all samples and mix them together */
 Sint16 get_next_mixed_sample(spc_state_t *state) {
-	Sint16 samples[SPC_NB_VOICES];
 	int ret = 0;
 
-	// int voice_nr = 7;
 	for (int voice_nr = 0; voice_nr < SPC_NB_VOICES; voice_nr++)
 	{
 		spc_voice_t *v = &state->voices[voice_nr];
 
 		if (v->enabled) {
-			samples[voice_nr] = get_next_sample(state, voice_nr);
-		} else {
-			samples[voice_nr] = 0;
+			ret += get_next_sample(state, voice_nr);
 		}
-
-		// XXX: Just a test for now.
-		ret += samples[voice_nr];
 	}
 
 	if (ret > 65535)
