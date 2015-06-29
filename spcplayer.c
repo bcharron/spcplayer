@@ -1212,6 +1212,16 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x0C: // ASL $xxyy
+			abs_addr = make16(operand2, operand1);
+			val = read_byte(state, abs_addr);
+			state->regs->psw.f.c = (val & 0x80) > 0;
+			val <<= 1;
+			write_byte(state, abs_addr, val);
+			adjust_flags(state, val);
+			cycles = 5;
+			break;
+
 		case 0x0D: // PUSH PSW
 			do_push(state, state->regs->psw.val);
 			cycles = 4;

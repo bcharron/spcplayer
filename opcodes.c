@@ -28,7 +28,7 @@ opcode_t OPCODE_TABLE[] = {
 	{ "AND1 C,/$%02X", 0x6A, 3 },
 	{ "ASL A", 0x1C, 1 },
 	{ "ASL $%02X,X", 0x1B, 2 },
-	{ "ASL $%02X", 0x0C, 3 },
+	{ "ASL $%02X%02X", 0x0C, 3 },
 	{ "ASLZ $%02X", 0x0B, 2 },
 	{ "LSR A", 0x5C, 1 },
 	{ "LSR $%02X,X", 0x5B, 2 },
