@@ -3311,20 +3311,20 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 		}
 	}
 
-	if (lret > 65535) {
+	if (lret > 32767) {
 		printf("Clipping (L+)\n");
-		lret = 65535;
-	} else if (lret < -65536) {
+		lret = 32767;
+	} else if (lret < -32768) {
 		printf("Clipping (L-)\n");
-		lret = -65536;
+		lret = -32768;
 	}
 
-	if (rret > 65535) {
+	if (rret > 32767) {
 		printf("Clipping (R+)\n");
-		rret = 65535;
-	} else if (lret < -65536) {
+		rret = 32767;
+	} else if (lret < -32768) {
 		printf("Clipping (R-)\n");
-		rret = -65536;
+		rret = -32768;
 	}
 
 	if (state->dsp_registers[SPC_DSP_FLG] & SPC_FLG_MUTE) {
