@@ -87,6 +87,9 @@
 #define SPC_TIMER_CYCLES_8KHZ 256
 #define SPC_TIMER_CYCLES_64KHZ 32
 
+// ADSR Stuff
+#define SPC_DSP_ENV_MAX (1 << 11)	// Max value of the enveloppe
+
 #define SPC_DSP_KON 0x4C
 #define SPC_DSP_KOFF 0x5C
 #define SPC_DSP_DIR 0x5D
@@ -192,6 +195,24 @@ typedef struct spc_file_s {
 	id_tag_t id_tag;
 } spc_file_t;
 
+enum adsr_phases {
+	SPC_VOICE_ATTACK,
+	SPC_VOICE_DECAY,
+	SPC_VOICE_SUSTAIN,
+	SPC_VOICE_RELEASE
+};
+
+typedef struct spc_adsr_s {
+	unsigned int ar;	// attack rate
+	unsigned int dr;	// decay rate
+	unsigned int sr;	// sustain rate
+	unsigned int sl;	// sustain level
+	unsigned int rr;	// release rate
+	unsigned int use_adsr;	// 1 = use ADSR, 0 = Use VxGAIN
+	int env;		// Current volume for this enveloppe
+	enum adsr_phases cur_phase;	// Current ADSR phase (A/D/S/R)
+} spc_adsr_t;
+
 /* Represents a voice */
 typedef struct spc_voice_s {
 	int enabled;		// 1 if enabled (KON), 0 otherwise
@@ -200,6 +221,7 @@ typedef struct spc_voice_s {
 	brr_block_t *block;	// Current block
 	unsigned int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
 	Sint16 prev_brr_samples[3];	// Used for interpolation
+	spc_adsr_t adsr;
 } spc_voice_t;
 
 typedef struct spc_state_s {
@@ -2837,6 +2859,18 @@ Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
 	return(out);
 }
 
+void decode_adsr(spc_state_t *state, int voice_nr, spc_adsr_t *out) {
+	Uint8 adsr1 = get_dsp_voice(state, voice_nr, SPC_DSP_VxADSR1);
+	Uint8 adsr2 = get_dsp_voice(state, voice_nr, SPC_DSP_VxADSR2);
+
+	out->ar = adsr1 & 0x0F;
+	out->dr = (adsr1 >> 4) & 0x07;
+	out->use_adsr = (adsr1 >> 6) & 0x01;
+	out->sr = adsr2 & 0x1F;
+	out->sl = (adsr2 >> 5) & 0x07;
+	out->rr = 31;
+}
+
 brr_block_t *decode_brr_block(Uint8 *ptr) {
 	Uint8 range;
 	Uint8 filter;
@@ -3268,18 +3302,12 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 			Sint16 s = get_next_sample(state, voice_nr);
 
 			Uint8 voll = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLL);
-
-			// Normalize before multiplying
-			float pct = (float) voll / 128;
-			lret += roundf(s * pct);
-
-			// printf("Before: %hd  After: %d  vol: %hhd (%0.2f)\n", s, (int) roundf(fsample), voll, pct);
+			lret += (s * voll) >> 7;
 
 			Uint8 volr = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLR);
+			rret += (s * volr) >> 7;
 
-			// Normalize before multiplying
-			pct = (float) volr / 128;
-			rret += roundf(s * pct);
+			// printf("Before: %hd  After: %d  vol: %hhd (%0.2f)\n", s, (int) roundf(fsample), voll, pct);
 		}
 	}
 
@@ -3307,6 +3335,47 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 	*left = lret;
 	*right = rret;
 }
+
+Sint16 apply_adsr(spc_state_t *state, int voice_nr, Sint16 sample) {
+	spc_voice_t *v = &state->voices[voice_nr];
+
+	switch(v->adsr.cur_phase) {
+		case SPC_VOICE_ATTACK:
+		{
+			// int rate = v->adsr.ar * 2 + 1;
+			// int step = rate == 31 ? 1024 : 32;
+
+			// v->adsr.steps = ???
+
+			// Attack is finished? Move to decay phase.
+			if (v->adsr.env >= SPC_DSP_ENV_MAX) {
+				v->adsr.env = SPC_DSP_ENV_MAX;
+				v->adsr.cur_phase = SPC_VOICE_DECAY;
+			}
+		}
+		break;
+
+		case SPC_VOICE_DECAY:
+			break;
+
+		case SPC_VOICE_SUSTAIN:
+			break;
+
+		case SPC_VOICE_RELEASE:
+			break;
+
+		default:
+			fprintf(stderr, "ERROR: Unknown adsr mode: %d\n", v->adsr.cur_phase);
+			exit(1);
+			break;
+	}
+
+	return(sample);
+}
+
+typedef struct signed_15bit_s {
+	int i : 15;
+} signed_15bit_t;
 
 /* Get the next sample for voice 'voice_nr' */
 Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
@@ -3343,17 +3412,22 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
-		int out = (INTERP_TABLE[0x0FF - index] * (int) v->prev_brr_samples[0]) >> 10;
-		out    += (INTERP_TABLE[0x1FF - index] * (int) v->prev_brr_samples[1]) >> 10;
-		out    += (INTERP_TABLE[0x100 + index] * (int) v->prev_brr_samples[2]) >> 10;
-		out    += (INTERP_TABLE[0x000 + index] * (int) sample) >> 10;
+		signed_15bit_t tmp;
 
-		if (out > 65535)
-			out = 65535;
-		else if (out < -65536)
-			out = -65536;
+		tmp.i  = (INTERP_TABLE[0x0FF - index] * (int) v->prev_brr_samples[0]) >> 11;
+		tmp.i += (INTERP_TABLE[0x1FF - index] * (int) v->prev_brr_samples[1]) >> 11;
+		tmp.i += (INTERP_TABLE[0x100 + index] * (int) v->prev_brr_samples[2]) >> 11;
 
-		out     = out >> 1;
+		int out = tmp.i;
+		out += (INTERP_TABLE[0x000 + index] * (int) sample) >> 11;
+
+		// Clamp to 15-bit
+		if (out > 16383)
+			out = 16383;
+		else if (out < -16384)
+			out = -16384;
+
+		// out     = out >> 1;
 
 		// printf("v[%d]: out: %d\n", voice_nr, out);
 
@@ -3369,6 +3443,8 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		int step = 0x1000;
 		step = pitch;
 		v->counter += step;
+
+		// sample = apply_adsr(state, voice_nr, sample);
 	}
 
 	return(sample);
