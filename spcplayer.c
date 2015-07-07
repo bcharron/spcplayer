@@ -37,6 +37,7 @@
 #include <SDL.h>
 #include <signal.h>
 #include <unistd.h>
+#include <limits.h>
 
 #include "opcodes.h"
 #include "dsp_registers.h"
@@ -90,6 +91,8 @@
 // ADSR Stuff
 #define SPC_DSP_ENV_MAX (1 << 11)	// Max value of the enveloppe
 
+#define SPC_DSP_MVOLL 0x0C
+#define SPC_DSP_MVOLR 0x1C
 #define SPC_DSP_KON 0x4C
 #define SPC_DSP_KOFF 0x5C
 #define SPC_DSP_DIR 0x5D
@@ -210,7 +213,9 @@ typedef struct spc_adsr_s {
 	unsigned int rr;	// release rate
 	unsigned int use_adsr;	// 1 = use ADSR, 0 = Use VxGAIN
 	int env;		// Current volume for this enveloppe
+	int step;		// How much to increment/decrement the enveloppe every 'rate' tick.
 	enum adsr_phases cur_phase;	// Current ADSR phase (A/D/S/R)
+	unsigned int next_counter;	// Next time to modify the enveloppe based on the global samples counter
 } spc_adsr_t;
 
 /* Represents a voice */
@@ -230,6 +235,7 @@ typedef struct spc_state_s {
 	Uint8 *ram;
 	Uint8 *dsp_registers;
 	Uint8 current_dsp_register;
+	unsigned int sample_counter;	// Number of samples played so far
 	unsigned long cycle;
 	spc_voice_t voices[8];
 	int trace;
@@ -755,6 +761,15 @@ Uint8 get_dsp_voice(spc_state_t *state, int voice_nr, Uint8 reg) {
 	result = get_dsp(state, addr);
 
 	return(result);
+}
+
+// Write 'val' to voice 'voice_nr's register 'reg'
+void set_dsp_voice(spc_state_t *state, int voice_nr, Uint8 reg, Uint8 val) {
+	Uint8 addr;
+
+	addr = voice_nr * 0x10 + reg;
+
+	state->dsp_registers[addr] = val;
 }
 
 /* Perform the branch if flag 'flag' is set */
@@ -2831,6 +2846,9 @@ typedef struct nibble_s {
 	int i : 4;
 } nibble_t;
 
+// XXX: anomie's docs has this to say about clamping:
+// "The calculations above are preformed in some higher number of bits, clamped
+// to 16 bits at the end and then clipped to 15 bits"
 Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
 	Sint16 out = 0;
 
@@ -3280,6 +3298,8 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 				if (v->block->loop_flag) {
 				} else {
 					// XXX: Set voice in Release and enveloppe to 0, apparently. Not a great fade..
+					state->voices[voice_nr].adsr.cur_phase = SPC_VOICE_RELEASE;
+					state->voices[voice_nr].adsr.env = 0;
 					ret = 0;
 				}
 
@@ -3299,31 +3319,37 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 		spc_voice_t *v = &state->voices[voice_nr];
 
 		if (v->enabled) {
-			Sint16 s = get_next_sample(state, voice_nr);
+			int s = get_next_sample(state, voice_nr);
 
 			Uint8 voll = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLL);
-			lret += (s * voll) >> 7;
+			lret += ((int)s * voll) >> 7;
 
 			Uint8 volr = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLR);
-			rret += (s * volr) >> 7;
+			rret += ((int)s * volr) >> 7;
 
 			// printf("Before: %hd  After: %d  vol: %hhd (%0.2f)\n", s, (int) roundf(fsample), voll, pct);
 		}
 	}
 
+	lret *= get_dsp(state, SPC_DSP_MVOLL);
+	lret >>= 7;
+
 	if (lret > 32767) {
-		printf("Clipping (L+)\n");
+		printf("Clamping (L+)\n");
 		lret = 32767;
 	} else if (lret < -32768) {
-		printf("Clipping (L-)\n");
+		printf("Clamping (L-)\n");
 		lret = -32768;
 	}
 
+	rret *= get_dsp(state, SPC_DSP_MVOLR);
+	rret >>= 7;
+
 	if (rret > 32767) {
-		printf("Clipping (R+)\n");
+		printf("Clamping (R+)\n");
 		rret = 32767;
 	} else if (lret < -32768) {
-		printf("Clipping (R-)\n");
+		printf("Clamping (R-)\n");
 		rret = -32768;
 	}
 
@@ -3336,39 +3362,201 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 	*right = rret;
 }
 
+// Rate: How long to go from 0 to 1 (0x7FF)
+// Rate 0 is 4.1 seconds.
+// 4.1s * 32000 samples/s = 131200 samples to go from 0 to 0x7FF enveloppe.
+// 1 is 0x7FF = 2047. Each attack step is 32. There are 2047/32 = 64 steps.
+// The number of steps to go from 0 to 1 (0x7FF) is 131200/64 = 2050 samples between steps.
+// rate 1: 1300 samples
+// rate 2: 750
+// rate 3: 500
+// rate 4: 320
+int ATTACK_RATE[] = {
+	2050, // 4.100
+	1300, // 2.600
+	750, // 1.500
+	500, // 1.000
+	320, // 0.640
+	190, // 0.380
+	130, // 0.260
+	80, // 0.160
+	48, // 0.096
+	32, // 0.064
+	20, // 0.040
+	12, // 0.024
+	8, // 0.016
+	5, // 0.010
+	3, // 0.006
+	0, // 0.000
+};
+
+// Sustain levels are a ratio of the maximum.
+// 0 is 1/8 * 0x7FF = 256.
+// 1 is 2/8 * 0x7FF = 512
+// ...
+int SUSTAIN_LEVEL[] = {
+	256,	// 0
+	512,	// 1
+	768,	// 2
+	1024,	// 3
+	1280,	// 4
+	1536,	// 5
+	1792,	// 6
+	2048	// 7
+};
+
+// Number of samples between enveloppe adjusments for the Decay phase
+// First index is DR, second is SL
+// See decay-sample-rate.py
+int DECAY_RATE[8][8] = {
+	{   72,  108,  152,  215,  317,  518, 1097,    0 },
+	{   44,   66,   94,  133,  195,  320,  676,    0 },
+	{   26,   39,   56,   79,  116,  190,  402,    0 },
+	{   17,   26,   36,   52,   76,  125,  265,    0 },
+	{   10,   16,   22,   32,   47,   77,  164,    0 },
+	{    6,    9,   14,   19,   29,   47,  100,    0 },
+	{    4,    6,    9,   13,   19,   32,   67,    0 },
+	{    2,    3,    4,    6,    9,   16,   33,    0 },
+};
+
+// Number of samples between enveloppe adjusments for the Sustain phase
+// First index is SR, second is SL
+// See sustain-sample-rate.py
+int SUSTAIN_RATE[32][8] = {
+	{    0,    0,    0,    0,    0,    0,    0,    0 },
+	{ 1208, 1027,  944,  894,  858,  830,  809,  791 },
+	{  890,  757,  696,  658,  632,  612,  596,  582 },
+	{  763,  649,  596,  564,  541,  524,  510,  499 },
+	{  604,  513,  472,  447,  429,  415,  404,  395 },
+	{  445,  378,  348,  329,  316,  306,  298,  291 },
+	{  381,  324,  298,  282,  270,  262,  255,  249 },
+	{  299,  254,  233,  221,  212,  205,  200,  195 },
+	{  225,  192,  176,  167,  160,  155,  151,  147 },
+	{  187,  159,  146,  138,  133,  128,  125,  122 },
+	{  149,  127,  116,  110,  106,  102,  100,   97 },
+	{  111,   94,   87,   82,   79,   76,   74,   72 },
+	{   92,   78,   72,   68,   65,   63,   61,   60 },
+	{   76,   64,   59,   56,   54,   52,   51,   49 },
+	{   57,   48,   44,   42,   40,   39,   38,   37 },
+	{   47,   40,   37,   35,   33,   32,   31,   31 },
+	{   38,   32,   29,   28,   27,   26,   25,   24 },
+	{   27,   23,   21,   20,   19,   19,   18,   18 },
+	{   23,   20,   18,   17,   16,   16,   15,   15 },
+	{   18,   15,   14,   13,   13,   12,   12,   12 },
+	{   13,   11,   10,   10,    9,    9,    9,    9 },
+	{   11,   10,    9,    8,    8,    8,    7,    7 },
+	{    9,    7,    7,    6,    6,    6,    6,    6 },
+	{    6,    5,    5,    5,    4,    4,    4,    4 },
+	{    5,    4,    4,    4,    4,    3,    3,    3 },
+	{    4,    4,    3,    3,    3,    3,    3,    3 },
+	{    3,    2,    2,    2,    2,    2,    2,    2 },
+	{    2,    2,    2,    2,    2,    2,    1,    1 },
+	{    2,    2,    1,    1,    1,    1,    1,    1 },
+	{    1,    1,    1,    1,    1,    1,    1,    1 },
+	{    1,    1,    0,    0,    0,    0,    0,    0 },
+	{    0,    0,    0,    0,    0,    0,    0,    0 },
+};
+
 Sint16 apply_adsr(spc_state_t *state, int voice_nr, Sint16 sample) {
 	spc_voice_t *v = &state->voices[voice_nr];
 
 	switch(v->adsr.cur_phase) {
 		case SPC_VOICE_ATTACK:
 		{
-			// int rate = v->adsr.ar * 2 + 1;
-			// int step = rate == 31 ? 1024 : 32;
-
-			// v->adsr.steps = ???
+			// Is it time to update the Attack enveloppe?
+			if (state->sample_counter >= v->adsr.next_counter) {
+				// Step is 1/64th of the max volume (2048), unless special case 0x0F.
+				int step = v->adsr.ar == 0x0F ? 1024 : 32;
+				// printf("Attack voice %d: before env = %d (rate = %d)\n", voice_nr, v->adsr.env, rate);
+				v->adsr.env += step;
+				// printf("Attack voice %d: after env = %d\n", voice_nr, v->adsr.env);
+				v->adsr.next_counter = state->sample_counter + ATTACK_RATE[v->adsr.ar];
+			}
 
 			// Attack is finished? Move to decay phase.
 			if (v->adsr.env >= SPC_DSP_ENV_MAX) {
 				v->adsr.env = SPC_DSP_ENV_MAX;
 				v->adsr.cur_phase = SPC_VOICE_DECAY;
+				v->adsr.next_counter = state->sample_counter + 1;	// How long to wait before switching?
 			}
 		}
 		break;
 
 		case SPC_VOICE_DECAY:
-			break;
+		{
+			// Is it time to update the Decay enveloppe?
+			if (state->sample_counter >= v->adsr.next_counter) {
+				// XXX: no$snes suggests this formula, but shouldn't it take SL into account?
+				// The curve in the specs looks like f(x) = 1-atan(pi/2 * x), or 1/sqrt(1+10x^2)
+				int step = -(((v->adsr.env - 1) >> 8) + 1);
+				v->adsr.env += step;
+				int rate = DECAY_RATE[v->adsr.dr][v->adsr.sl];
+				v->adsr.next_counter = state->sample_counter + rate;
+			}
+
+			// Decay reached Sustain Level ("SL")? Move to Sustain phase.
+			if (v->adsr.env <= SUSTAIN_LEVEL[v->adsr.sl]) {
+				v->adsr.env = SUSTAIN_LEVEL[v->adsr.sl];
+				v->adsr.cur_phase = SPC_VOICE_SUSTAIN;
+				v->adsr.next_counter = state->sample_counter + 1;	// XXX: How long to wait before switching?
+			}
+		}
+		break;
 
 		case SPC_VOICE_SUSTAIN:
-			break;
+		{
+			// Is it time to update the Sustain enveloppe?
+			if (state->sample_counter >= v->adsr.next_counter) {
+				int step = -(((v->adsr.env - 1) >> 8) + 1);
+				// printf("v[%d]  step: %d  rate: %d env: %d\n", voice_nr, step, rate, v->adsr.env);
+
+				// XXX: How often to check if the rate changed when rate == infinity?
+				int rate = SUSTAIN_RATE[v->adsr.sr][v->adsr.sl];
+				v->adsr.next_counter = state->sample_counter + rate;
+
+				// 0 is infinite decay
+				if (v->adsr.sr > 0) {
+					v->adsr.env += step;
+				}
+			}
+
+			if (v->adsr.env <= 0)
+				v->adsr.env = 0;
+		}
+		break;
 
 		case SPC_VOICE_RELEASE:
-			break;
+		{
+			if (v->adsr.env > 0) {
+				v->adsr.env -= 8;
+
+				if (v->adsr.env < 0)
+					v->adsr.env = 0;
+			}
+		}
+		break;
 
 		default:
 			fprintf(stderr, "ERROR: Unknown adsr mode: %d\n", v->adsr.cur_phase);
 			exit(1);
 			break;
 	}
+
+	// printf("sample before: %hd (env: %d)\n", sample, v->adsr.env);
+	int isample = sample;
+	isample = (isample * v->adsr.env) >> 11;
+	sample = isample;
+	// printf("sample after: %hd\n", sample);
+	// sample = (sample * v->adsr.env) >> 11;
+
+	Uint8 envx = ((unsigned int) v->adsr.env >> 4) & 0x0F;
+	set_dsp_voice(state, voice_nr, SPC_DSP_VxENVX, envx);
+
+	return(sample);
+}
+
+Sint16 apply_gain(spc_state_t *state, int voice_nr, Sint16 sample) {
+	// XXX: Stub for now
 
 	return(sample);
 }
@@ -3399,9 +3587,6 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		sample = 0;
 	} else {
 		unsigned int brr_nr = (v->counter >> 12) & 0xF;
-
-		// XXX: Using a mask of 0x1FF would go outside the boundary for the tables below.
-		// unsigned int index = (v->counter >> 4) & 0x1FF;
 		unsigned int index = (v->counter >> 4) & 0xFF;
 
 		assert(brr_nr >= 0 && brr_nr <= 15);
@@ -3444,7 +3629,16 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		step = pitch;
 		v->counter += step;
 
-		// sample = apply_adsr(state, voice_nr, sample);
+		decode_adsr(state, voice_nr, &v->adsr);
+
+		if (v->adsr.use_adsr) {
+			sample = apply_adsr(state, voice_nr, sample);
+		} else {
+			sample = apply_gain(state, voice_nr, sample);
+		}
+
+		Uint8 outx = (sample >> 8) & 0x0F;
+		set_dsp_voice(state, voice_nr, SPC_DSP_VxOUTX, outx);
 	}
 
 	return(sample);
@@ -3458,6 +3652,13 @@ void kon_voice(spc_state_t *state, int voice_nr) {
 	
 	// XXX: Include PMON
 	state->voices[voice_nr].counter = 0;
+
+	// Set enveloppe to 0 and ADSR phase to Attack
+	state->voices[voice_nr].adsr.env = 0;
+	state->voices[voice_nr].adsr.cur_phase = SPC_VOICE_ATTACK;
+	state->voices[voice_nr].adsr.next_counter = state->sample_counter + 1;
+
+	decode_adsr(state, voice_nr, &state->voices[voice_nr].adsr);
 
 	/* KON can be called while the voice is already enabled */
 	if (NULL != state->voices[voice_nr].block) {
@@ -3480,6 +3681,9 @@ void koff_voice(spc_state_t *state, int voice_nr) {
 		free(state->voices[voice_nr].block);
 		state->voices[voice_nr].block = NULL;
 	}
+
+	state->voices[voice_nr].adsr.cur_phase = SPC_VOICE_RELEASE;
+	state->voices[voice_nr].adsr.next_counter = state->sample_counter + 1;
 }
 
 /* Initialize a voice to a default state at power-up */
@@ -3758,6 +3962,7 @@ int main (int argc, char *argv[])
 	state.profile_info = NULL;
 	state.audio_buf = buffer_create(AUDIO_BUFFER_SIZE);
 	state.out_file = NULL;
+	state.sample_counter = 0;
 
 	// Dump buffer to a file, if requested.
 	if (opts.output_file != NULL)
@@ -4099,6 +4304,8 @@ int main (int argc, char *argv[])
 					SDL_UnlockAudioDevice(state.audio_dev);
 				}
 			}
+
+			state.sample_counter++;
 		}
 	}
 
