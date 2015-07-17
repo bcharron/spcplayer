@@ -3676,8 +3676,8 @@ Sint16 apply_gain(spc_state_t *state, int voice_nr, Sint16 sample) {
 			// Adjust enveloppe UNLESS Infinite (gain_value 0)
 			if (rate > 0)
 				v->adsr.env += step;
-			else if (v->adsr.gain_mode <= 3)
-				v->adsr.env = v->adsr.gain;
+			else if (v->adsr.gain_mode <= 3) // Direct gain
+				v->adsr.env = v->adsr.gain << 4;
 
 			if (v->adsr.env < 0)
 				v->adsr.env = 0;
