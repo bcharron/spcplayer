@@ -1,5 +1,5 @@
-CFLAGS=-Wall -ggdb `sdl2-config --cflags`
-LDFLAGS=`sdl2-config --libs`
+CFLAGS=-Wall -ggdb `/usr/local/bin/sdl2-config --cflags`
+LDFLAGS=`/usr/local/bin/sdl2-config --libs`
 
 # For OSX
 #LDFLAGS=`/opt/local/bin/sdl-config --libs`
@@ -19,6 +19,10 @@ spcplayer.o: spcplayer.c opcodes.h
 spcdisasm.o: spcdisasm.c
 
 spcdisasm: spcdisasm.o opcodes.o
+
+convert-opcode-table.o: convert-opcode-table.c opcodes.h opcodes.c
+
+convert-opcode-table: convert-opcode-table.o opcodes.o
 
 profile: spcplayer
 	sample -wait -file spcplayer.profile.txt spcplayer &

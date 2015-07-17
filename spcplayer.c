@@ -131,10 +131,11 @@ enum trace_flags {
 	TRACE_CPU_INSTRUCTIONS = 0x10,
 	TRACE_COUNTERS = 0x20,
 	TRACE_DSP_OPS = 0x40,
-	TRACE_TIME_ELAPSED = 0x80
+	TRACE_TIME_ELAPSED = 0x80,
+	TRACE_ADSR = 0x100
 };
 
-#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS | TRACE_COUNTERS | TRACE_DSP_OPS | TRACE_TIME_ELAPSED)
+#define TRACE_ALL (TRACE_CPU_JUMPS | TRACE_APU_VOICES | TRACE_REGISTER_WRITES | TRACE_REGISTER_READS | TRACE_CPU_INSTRUCTIONS | TRACE_COUNTERS | TRACE_DSP_OPS | TRACE_TIME_ELAPSED | TRACE_ADSR)
 
 // Bit order: 7 6 5 4 3 2 1 0
 //            N V P - H - Z C
@@ -216,6 +217,8 @@ typedef struct spc_adsr_s {
 	int step;		// How much to increment/decrement the enveloppe every 'rate' tick.
 	enum adsr_phases cur_phase;	// Current ADSR phase (A/D/S/R)
 	unsigned int next_counter;	// Next time to modify the enveloppe based on the global samples counter
+	int gain;		// Value of VxGAIN
+	int gain_mode;		// 0:Decrease linear, 1:Decrease Exp, 2:Increase linear, 3:Increase bent
 } spc_adsr_t;
 
 /* Represents a voice */
@@ -230,7 +233,7 @@ typedef struct spc_voice_s {
 } spc_voice_t;
 
 typedef struct spc_state_s {
-	spc_registers_t *regs;
+	spc_registers_t *regs; // XXX: Why the hell would I make regs a pointer.
 	spc_timers_t timers;
 	Uint8 *ram;
 	Uint8 *dsp_registers;
@@ -300,7 +303,7 @@ void write_word(spc_state_t *state, Uint16 addr, Uint16 val);
 void enable_timer(spc_state_t *state, int timer);
 void clear_timer(spc_state_t *state, int timer);
 Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop);
-brr_block_t *decode_brr_block(Uint8 *ptr);
+brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr);
 void kon_voice(spc_state_t *state, int voice_nr);
 void koff_voice(spc_state_t *state, int voice_nr);
 void init_voice(spc_state_t *state, int voice_nr);
@@ -397,11 +400,9 @@ opcode_t *get_opcode_by_value(Uint8 opcode) {
 void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 	FILE *f;
 	int dealloc = 0;
-	int pitch = 0x1000;	// XXX: Pitch is hardocded.
-	int step = pitch;
-	int counter = 0;
 	int done = 0;
 	int written_samples = 0;
+	brr_block_t *block;
 
 	if (NULL == path) {
 		path = malloc(1024);
@@ -414,48 +415,20 @@ void dump_voice(spc_state_t *state, int voice_nr, char *path) {
 
 	int addr = get_sample_addr(state, voice_nr, 0);
 
-	pitch = get_voice_pitch(state, voice_nr);
-	step = pitch;
-
-	printf("Pitch: %d (%04X)\n", pitch, pitch);
-
-	brr_block_t *block;
-
-	counter = 0;
 	do {
-		block = decode_brr_block(&state->ram[addr]);
+		block = decode_brr_block(&state->voices[voice_nr], &state->ram[addr]);
 		addr += 9;
 
-		counter = 0;
-
-		counter = counter % 65536;
-
-		while (counter < (1 << 16)) {
-			int brr_nr = ((counter & 0xF000) >> 12) & 0xF;
-			int index = ((counter & 0x0FF0) >> 4);
+		for (int brr_nr = 0; brr_nr < 16; brr_nr++) {
 			Sint16 sample = block->samples[brr_nr];
-
-			assert(brr_nr <= 15);
-			assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
-
-			// Uint16 out = (INTERP_TABLE[0x00 + index] * sample);
-
-			fprintf(f, "%d\n", sample);
-
+			fprintf(f, "%hd\n", sample);
 			written_samples++;
-
-			// printf("sample: %d   out: %d  brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, out, brr_nr, index, counter, counter);
-			printf("sample: %d    brr_nr: %d   index: %d  counter: %d (%04X)\n", sample, brr_nr, index, counter, counter);
-
-			counter += step;
+			printf("sample: %d    brr_nr: %d\n", sample, brr_nr);
 		}
-
-		printf("last_chunk? %d\n", block->last_chunk);
-		printf("loop? %d\n", block->loop_flag);
 
 		if (block->last_chunk) {
 			if (block->loop_flag) {
-				printf("Starting loop.\n");
+				printf("Looping.\n");
 				addr = get_sample_addr(state, voice_nr, 1);
 			} else {
 				done = 1;
@@ -1019,7 +992,7 @@ Uint8 do_sbc(spc_state_t *state, Uint8 dst, Uint8 operand) {
 	state->regs->psw.f.n = ((ret & 0x80) != 0);
 	state->regs->psw.f.v = (sResult < -128 || sResult > 127);
 
-	// According to docs, v and h are already set together. Which is good
+	// According to docs, v and h are always set together. Which is good
 	// because I don't understand what the h flag is supposed to be.
 	state->regs->psw.f.h = state->regs->psw.f.v;
 
@@ -1183,6 +1156,12 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 	operand1 = state->ram[addr + 1];
 	operand2 = state->ram[addr + 2];
 
+	// XXX: Incrementing pc immediately would make branches much
+	// easier to handle.
+
+	// XXX: Having an alias for regs would remove a lot of useless
+	// deferencing below.
+	
 	opcode_ptr = get_opcode_by_value(opcode);
 
 	switch(opcode) {
@@ -1994,13 +1973,13 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 
 		case 0x9E: // DIV YA, X
 		{
-			// XXX: Not sure at all about this one.
 			Uint16 ya = make16(state->regs->y, state->regs->a);
 
 			state->regs->a = ya / state->regs->x;
 			state->regs->y = ya % state->regs->x;
 
-			// XXX: Update flags.. from A?
+			// Result is based on the division only, not the
+			// modulo.
 			adjust_flags(state, state->regs->a);
 
 			// XXX: How to update the V and H flags?
@@ -2612,6 +2591,23 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 				case 0x2E: // CBNE $dp, rr
 				case 0x6E: // DBNZ $dp, rr
 				case 0xDE: // CBNE $dp+X, rr
+
+				case 0x03: // The BBC/BBS are typically displayed as 
+				case 0x13: // "BBC $dp, #$rel".
+				case 0x23:
+				case 0x33:
+				case 0x43:
+				case 0x53:
+				case 0x63:
+				case 0x73:
+				case 0x83:
+				case 0x93:
+				case 0xA3:
+				case 0xB3:
+				case 0xC3:
+				case 0xD3:
+				case 0xE3:
+				case 0xF3:
 					snprintf(str, sizeof(str), op->name, ram[pc + 1], ram[pc + 2]);
 					break;
 
@@ -2634,17 +2630,25 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 	switch(opcode) {
 		// These are inversed compared to other branch opcodes, and
 		// they need to be incremented by 3 rather than 2.
+		case 0x03: // BBS0
 		case 0x13: // BBC0
+		case 0x23: // BBS1
 		case 0x2E: // CBNE $dp, $rr
 		case 0x33: // BBC1
+		case 0x43: // BBS2
 		case 0x53: // BBC2
+		case 0x63: // BBS3
 		case 0x6E: // DBNZ $dp, $rr
 		case 0x73: // BBC3
+		case 0x83: // BBS4
 		case 0x93: // BBC4
+		case 0xA3: // BBS5
 		case 0xB3: // BBC5
+		case 0xC3: // BBS6
 		case 0xD3: // BBC6
-		case 0xF3: // BBC7
 		case 0xDE: // CBNE $dp+X, $rr
+		case 0xE3: // BBS7
+		case 0xF3: // BBC7
 		{
 			printf(" ($%04X)", pc + 3 + (Sint8) ram[pc + 2]);
 		}
@@ -2880,6 +2884,7 @@ Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
 void decode_adsr(spc_state_t *state, int voice_nr, spc_adsr_t *out) {
 	Uint8 adsr1 = get_dsp_voice(state, voice_nr, SPC_DSP_VxADSR1);
 	Uint8 adsr2 = get_dsp_voice(state, voice_nr, SPC_DSP_VxADSR2);
+	Uint8 gain = get_dsp_voice(state, voice_nr, SPC_DSP_VxGAIN);
 
 	out->ar = adsr1 & 0x0F;
 	out->dr = (adsr1 >> 4) & 0x07;
@@ -2887,9 +2892,12 @@ void decode_adsr(spc_state_t *state, int voice_nr, spc_adsr_t *out) {
 	out->sr = adsr2 & 0x1F;
 	out->sl = (adsr2 >> 5) & 0x07;
 	out->rr = 31;
+
+	out->gain = gain;
+	out->gain_mode = (gain >> 5);
 }
 
-brr_block_t *decode_brr_block(Uint8 *ptr) {
+brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 	Uint8 range;
 	Uint8 filter;
 	Uint8 loop_flag;
@@ -3086,7 +3094,29 @@ void dump_dsp(spc_state_t *state) {
 			case 0x57:
 			case 0x67:
 			case 0x77:
-				printf("Voice %d ($%02X): GAIN: %u\n", voice, i, dsp[i]);
+				printf("Voice %d ($%02X): GAIN: %02X (mode: %d)\n", voice, i, dsp[i], dsp[i] >> 5);
+				break;
+
+			case 0x08:
+			case 0x18:
+			case 0x28:
+			case 0x38:
+			case 0x48:
+			case 0x58:
+			case 0x68:
+			case 0x78:
+				printf("Voice %d ($%02X): ENVX (%02X)\n", voice, i, dsp[i]);
+				break;
+
+			case 0x09:
+			case 0x19:
+			case 0x29:
+			case 0x39:
+			case 0x49:
+			case 0x59:
+			case 0x69:
+			case 0x79:
+				printf("Voice %d ($%02X): OUTX (%02X)\n", voice, i, dsp[i]);
 				break;
 
 			case 0x0F:
@@ -3099,14 +3129,6 @@ void dump_dsp(spc_state_t *state) {
 			case 0x7F:
 				// XXX: Whether or not it's a voice depends on the source. May or not be per-voice?
 				printf("Voice %d ($%02X): FILTER: %u\n", voice, i, dsp[i]);
-				break;
-
-			case 0x08:
-				printf("*ENVX: %u\n", dsp[i]);
-				break;
-
-			case 0x09:
-				printf("*VALX: %u\n", dsp[i]);
 				break;
 
 			case 0x0C:
@@ -3189,6 +3211,7 @@ void show_menu(void) {
 	printf("ta         Enable/disable ALL tracing \n");
 	printf("td         Enable/disable DSP Operations tracing\n");
 	printf("te         Enable/disable time elapsed tracing\n");
+	printf("tg         Enable/disable Gain/ADSR sample tracing\n");
 	printf("ti         Enable/disable instruction tracing\n");
 	printf("tj         Enable/disable jump/call tracing\n");
 	printf("tt         Enable/disable timer/counters tracing\n");
@@ -3291,7 +3314,7 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 		if (ret) {
 			// printf("v[%d]: decode_next_brr_block(): decoding from $%04X\n", voice_nr, v->cur_addr);
 
-			v->block = decode_brr_block(&state->ram[v->cur_addr]);
+			v->block = decode_brr_block(v, &state->ram[v->cur_addr]);
 
 			/* Last chunk? Set the ENDX flag */
 			if (v->block->last_chunk) {
@@ -3329,6 +3352,26 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 
 			// printf("Before: %hd  After: %d  vol: %hhd (%0.2f)\n", s, (int) roundf(fsample), voll, pct);
 		}
+
+		if ((state->trace & TRACE_ADSR) && state->sample_counter % 250 == 0) {
+			printf("v[%d]: ", voice_nr);
+
+			if (! v->enabled) {
+				printf(" xx            ");
+			} else if (v->adsr.use_adsr) {
+				printf("ADSR (%d/%04d)  ", v->adsr.cur_phase, v->adsr.env);
+			} else {
+				if ((v->adsr.gain & 0x80) == 0) {
+					printf("GAIN (x/%d/%04d)  ", v->adsr.gain, v->adsr.env);
+				} else {
+					printf("GAIN (%d/%d/%04d)  ", v->adsr.gain_mode, v->adsr.gain & 0x1F, v->adsr.env);
+				}
+			}
+		}
+	}
+
+	if ((state->trace & TRACE_ADSR) && state->sample_counter % 250 == 0) {
+		printf("\n");
 	}
 
 	lret *= get_dsp(state, SPC_DSP_MVOLL);
@@ -3358,8 +3401,11 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 		rret = 0;
 	}
 
-	*left = lret;
-	*right = rret;
+// XXX: Defining a manual amp for now to get the sound loud enough.
+#define STATIC_GAIN 16
+
+	*left = lret * STATIC_GAIN;
+	*right = rret * STATIC_GAIN;
 }
 
 // Rate: How long to go from 0 to 1 (0x7FF)
@@ -3457,6 +3503,21 @@ int SUSTAIN_RATE[32][8] = {
 	{    0,    0,    0,    0,    0,    0,    0,    0 },
 };
 
+
+int GAIN_LINEAR[32] = {
+	   0, 2050, 1550, 1300, 1000,  750,  650,  500,
+	 385,  320,  255,  190,  160,  130,   95,   80,
+	  65,   48,   40,   32,   24,   20,   16,   12,
+	  10,    8,    6,    5,    4,    3,    2,    1,
+};
+
+int GAIN_BENT[32] = {
+	   0, 2057, 1542, 1314, 1000,  742,  657,  514,
+	 371,  314,  257,  191,  160,  128,   97,   80,
+	  62,   48,   40,   31,   24,   20,   16,   12,
+	  10,    8,    6,    5,    4,    3,    2,    1,
+};
+
 Sint16 apply_adsr(spc_state_t *state, int voice_nr, Sint16 sample) {
 	spc_voice_t *v = &state->voices[voice_nr];
 
@@ -3530,8 +3591,10 @@ Sint16 apply_adsr(spc_state_t *state, int voice_nr, Sint16 sample) {
 			if (v->adsr.env > 0) {
 				v->adsr.env -= 8;
 
-				if (v->adsr.env < 0)
+				if (v->adsr.env <= 0) {
 					v->adsr.env = 0;
+					v->enabled = 0;
+				}
 			}
 		}
 		break;
@@ -3556,7 +3619,82 @@ Sint16 apply_adsr(spc_state_t *state, int voice_nr, Sint16 sample) {
 }
 
 Sint16 apply_gain(spc_state_t *state, int voice_nr, Sint16 sample) {
-	// XXX: Stub for now
+	spc_voice_t *v = &state->voices[voice_nr];
+
+	int step = 0;
+	int rate = 0;
+	int gain_value = (v->adsr.gain & 0x1F);
+
+	// printf("gain: %02X\n", gain_value);
+
+	switch(v->adsr.gain_mode) {
+		case 0:
+		case 1:
+		case 2:
+		case 3:
+			// v->adsr.env = (v->adsr.gain << 4);
+			// step = v->adsr.env - (v->adsr.gain << 4);
+			rate = 0;
+			break;
+
+		case 4: // Decrease Linear
+			step = -32; // 1/64 * 2048
+			rate = GAIN_LINEAR[gain_value];
+			break;
+
+		case 5: // Decrease Exponential
+			// 1/64 from 0 to 0.75, 1/256 from 0.75 to 1
+			step = -(((v->adsr.env - 1) >> 8) + 1);
+
+			// Same chart as ADSR's SR with SL = 7 (ie, start from max)
+			// The time is for "0 -> 1/10" according to the doc. They probably meant "1 -> 1/10", no?
+			rate = SUSTAIN_RATE[gain_value][7];
+			// printf("rate: %d\n", rate);
+			// printf("gain_value: %d\n", gain_value);
+			break;
+
+		case 6: // Increase Linear
+			step = 32; // 1/64
+			rate = GAIN_LINEAR[gain_value];
+			break;
+
+		case 7: // Increase Bent line
+			step = (v->adsr.env > 1536) ? 8 : 32;
+			rate = GAIN_BENT[gain_value];
+			break;
+
+		default:
+			fprintf(stderr, "Error: gain_mode == %02X, which is impossible.\n", v->adsr.gain_mode);
+			exit(1);
+			break;
+
+	}
+
+	if (state->sample_counter >= v->adsr.next_counter) {
+		v->adsr.next_counter = state->sample_counter + rate;
+
+		if (v->adsr.env > 0 && v->adsr.env < 2048) {
+			// Adjust enveloppe UNLESS Infinite (gain_value 0)
+			if (rate > 0)
+				v->adsr.env += step;
+			else if (v->adsr.gain_mode <= 3)
+				v->adsr.env = v->adsr.gain;
+
+			if (v->adsr.env < 0)
+				v->adsr.env = 0;
+			else if (v->adsr.env > 2047)
+				v->adsr.env = 2047;
+		}
+	}
+
+	int isample = sample;
+	isample = (isample * v->adsr.env) >> 11;
+	sample = isample;
+	// printf("sample after: %hd\n", sample);
+	// sample = (sample * v->adsr.env) >> 11;
+
+	Uint8 envx = ((unsigned int) v->adsr.env >> 4) & 0x0F;
+	set_dsp_voice(state, voice_nr, SPC_DSP_VxENVX, envx);
 
 	return(sample);
 }
@@ -3582,6 +3720,8 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 			printf("Voice [%d] is ending.\n", voice_nr);
 
 		v->enabled = 0;
+		v->adsr.cur_phase = SPC_VOICE_RELEASE;
+		v->adsr.env = 0;
 
 		// Silence
 		sample = 0;
@@ -3646,41 +3786,48 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 /* Called when a voice is Keyed-ON ("KON") */
 void kon_voice(spc_state_t *state, int voice_nr) {
-	state->voices[voice_nr].enabled = 1;
-	state->voices[voice_nr].cur_addr = get_sample_addr(state, voice_nr, 0);
-	state->voices[voice_nr].looping = 0;
+	spc_voice_t *v;
+
+	v = &state->voices[voice_nr];
+
+	v->enabled = 1;
+	v->cur_addr = get_sample_addr(state, voice_nr, 0);
+	v->looping = 0;
 	
 	// XXX: Include PMON
-	state->voices[voice_nr].counter = 0;
+	v->counter = 0;
 
 	// Set enveloppe to 0 and ADSR phase to Attack
-	state->voices[voice_nr].adsr.env = 0;
-	state->voices[voice_nr].adsr.cur_phase = SPC_VOICE_ATTACK;
-	state->voices[voice_nr].adsr.next_counter = state->sample_counter + 1;
+	v->adsr.env = 0;
+	v->adsr.cur_phase = SPC_VOICE_ATTACK;
+	v->adsr.next_counter = state->sample_counter + 1;
 
-	decode_adsr(state, voice_nr, &state->voices[voice_nr].adsr);
+	decode_adsr(state, voice_nr, &v->adsr);
 
 	/* KON can be called while the voice is already enabled */
-	if (NULL != state->voices[voice_nr].block) {
-		free(state->voices[voice_nr].block);
-		state->voices[voice_nr].block = NULL;
+	if (NULL != v->block) {
+		free(v->block);
+		v->block = NULL;
 	}
 
-	Uint8 *block_ptr = &state->ram[state->voices[voice_nr].cur_addr];
+	Uint8 *block_ptr = &state->ram[v->cur_addr];
 
-	state->voices[voice_nr].block = decode_brr_block(block_ptr);
+	v->block = decode_brr_block(v, block_ptr);
 
-	assert(state->voices[voice_nr].block != NULL);
+	assert(v->block != NULL);
 }
 
 /* Called when a voice is Keyed-OFF ("KOFF") */
 void koff_voice(spc_state_t *state, int voice_nr) {
+	// Continue evaluating samples even though the voice is off.
+	/*
 	state->voices[voice_nr].enabled = 0;
 
 	if (NULL != state->voices[voice_nr].block) {
 		free(state->voices[voice_nr].block);
 		state->voices[voice_nr].block = NULL;
 	}
+	*/
 
 	state->voices[voice_nr].adsr.cur_phase = SPC_VOICE_RELEASE;
 	state->voices[voice_nr].adsr.next_counter = state->sample_counter + 1;
@@ -3692,6 +3839,9 @@ void init_voice(spc_state_t *state, int voice_nr) {
 
 	enabled = !!(state->dsp_registers[SPC_DSP_KON] & (1 << voice_nr));
 
+	// We don't know what the enveloppe was during the snapshot but we can
+	// approximate from the current value of VxENVX
+	state->voices[voice_nr].adsr.env = get_dsp_voice(state, voice_nr, SPC_DSP_VxENVX) << 4;
 	state->voices[voice_nr].enabled = 0;
 	state->voices[voice_nr].cur_addr = 0;
 	state->voices[voice_nr].looping = 0;
@@ -4163,6 +4313,13 @@ int main (int argc, char *argv[])
 							{
 								state.trace ^= TRACE_TIME_ELAPSED;
 								printf("Time elapsed tracing is now %s.\n", state.trace & TRACE_TIME_ELAPSED ? "enabled" : "disabled");
+							}
+							break;
+
+							case 'g' :
+							{
+								state.trace ^= TRACE_ADSR;
+								printf("Gain/ADSR tracing is now %s.\n", state.trace & TRACE_ADSR ? "enabled" : "disabled");
 							}
 							break;
 
