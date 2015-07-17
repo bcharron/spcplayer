@@ -227,8 +227,9 @@ typedef struct spc_voice_s {
 	Uint16 cur_addr;	// Address of current sample block
 	int looping;		// Whether it's in looping mode
 	brr_block_t *block;	// Current block
-	unsigned int counter;		// Current counter, based on number of steps done for this block of 4 BRR samples so far
-	Sint16 prev_brr_samples[3];	// Used for interpolation
+	unsigned int counter;	// Current counter, based on number of steps done for this block of 4 BRR samples so far
+	Sint16 prev_interp[3];	// Previous BRR samples, for interpolation
+	Sint16 prev_brr[2];	// Previous BRR samples, for voice filter
 	spc_adsr_t adsr;
 } spc_voice_t;
 
@@ -2906,7 +2907,6 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 	Uint8 loop_code;
 	Uint8 b;
 	brr_block_t *block;
-	Sint16 prev[2] = { 0, 0 };
 
 	/*
 	Uint8 bytes[9] = { 12 << 4, 0x77, 0x77, 0x99, 0x99, 0x77, 0x77, 0x99, 0x99 };
@@ -2959,12 +2959,12 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 		// printf("dst1: %d\n", dst);
 
 		// XXX: prev probably needs to be maintained in-between BRR blocks.
-		block->samples[2 * x] = do_filter(filter, dst, prev);
+		block->samples[2 * x] = do_filter(filter, dst, v->prev_brr);
 
 		tmp.i = ptr[x] & 0x0F;
 		dst = tmp.i;
 		dst = (dst << range) >> 1;
-		block->samples[2 * x + 1] = do_filter(filter, dst, prev);
+		block->samples[2 * x + 1] = do_filter(filter, dst, v->prev_brr);
 		// printf("dst2: %d\n", dst);
 	}
 
@@ -3748,9 +3748,9 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 		signed_15bit_t tmp;
 
-		tmp.i  = (INTERP_TABLE[0x0FF - index] * (int) v->prev_brr_samples[0]) >> 11;
-		tmp.i += (INTERP_TABLE[0x1FF - index] * (int) v->prev_brr_samples[1]) >> 11;
-		tmp.i += (INTERP_TABLE[0x100 + index] * (int) v->prev_brr_samples[2]) >> 11;
+		tmp.i  = (INTERP_TABLE[0x0FF - index] * (int) v->prev_interp[0]) >> 11;
+		tmp.i += (INTERP_TABLE[0x1FF - index] * (int) v->prev_interp[1]) >> 11;
+		tmp.i += (INTERP_TABLE[0x100 + index] * (int) v->prev_interp[2]) >> 11;
 
 		int out = tmp.i;
 		out += (INTERP_TABLE[0x000 + index] * (int) sample) >> 11;
@@ -3766,9 +3766,9 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		// printf("v[%d]: out: %d\n", voice_nr, out);
 
 		/* Rotate the samples for next time */
-		v->prev_brr_samples[0] = v->prev_brr_samples[1];
-		v->prev_brr_samples[1] = v->prev_brr_samples[2];
-		v->prev_brr_samples[2] = sample;
+		v->prev_interp[0] = v->prev_interp[1];
+		v->prev_interp[1] = v->prev_interp[2];
+		v->prev_interp[2] = sample;
 
 		sample = out;
 
@@ -3855,10 +3855,13 @@ void init_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].cur_addr = 0;
 	state->voices[voice_nr].looping = 0;
 	state->voices[voice_nr].block = NULL;
-	state->voices[voice_nr].prev_brr_samples[0] = 0;
-	state->voices[voice_nr].prev_brr_samples[1] = 0;
-	state->voices[voice_nr].prev_brr_samples[2] = 0;
+	state->voices[voice_nr].prev_interp[0] = 0;
+	state->voices[voice_nr].prev_interp[1] = 0;
+	state->voices[voice_nr].prev_interp[2] = 0;
 	state->voices[voice_nr].counter = 0;
+
+	state->voices[voice_nr].prev_brr[0] = 0;
+	state->voices[voice_nr].prev_brr[1] = 0;
 
 	if (enabled) {
 		printf("Enabling voice %d\n", voice_nr);
