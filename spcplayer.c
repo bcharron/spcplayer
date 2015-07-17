@@ -2919,20 +2919,12 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 		exit(1);
 	}
 
-	// printf("Byte 1: %02X\n", ptr[0]);
-
 	b = ptr[0];
 	range = (b >> 4) & 0x0F;
 	filter = (b >> 2) & 0x03;
 	loop_flag = (b >> 1) & 0x01;
 	last_chunk = b & 0x01;
 	loop_code = b & 0x03;
-
-	// XXX: Not sure what to do when the range exceeds 12..
-	assert(range <= 12);
-
-	// printf("Range: %d\n", filter);
-	// printf("Block filter: %d\n", filter);
 
 	block->filter = filter;
 	block->loop_flag = loop_flag;
@@ -2950,30 +2942,28 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 		Sint16 dst;
 		nibble_t tmp;
 
-		// printf("Byte %d: %02X\n", x, ptr[x]);
-
 		// Most Significant Nibble first
 		tmp.i = (ptr[x] >> 4) & 0x0F;
 		dst = tmp.i;
-		dst = (dst << range) >> 1;
-		// printf("dst1: %d\n", dst);
 
-		// XXX: prev probably needs to be maintained in-between BRR blocks.
+		if (range <= 12) {
+			dst = (dst << range) >> 1;
+		} else {
+			dst = ((dst >> 3) << 12) >> 1;
+		}
+
 		block->samples[2 * x] = do_filter(filter, dst, v->prev_brr);
 
 		tmp.i = ptr[x] & 0x0F;
 		dst = tmp.i;
-		dst = (dst << range) >> 1;
-		block->samples[2 * x + 1] = do_filter(filter, dst, v->prev_brr);
-		// printf("dst2: %d\n", dst);
-	}
+		if (range <= 12) {
+			dst = (dst << range) >> 1;
+		} else {
+			dst = ((dst >> 3) << 12) >> 1;
+		}
 
-	/*
-	printf("Samples: [");
-	for (int x = 0; x < 16; x++)
-		printf("%d ", block->samples[x]);
-	printf("]\n");
-	*/
+		block->samples[2 * x + 1] = do_filter(filter, dst, v->prev_brr);
+	}
 
 	return(block);
 }
