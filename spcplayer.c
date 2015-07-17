@@ -675,8 +675,9 @@ void write_byte(spc_state_t *state, Uint16 addr, Uint8 val) {
 	if ((addr & 0xFFF0) == 0x00F0) {
 		// XXX: Handle register here.
 		register_write(state, addr, val);
-	} else
+	} else {
 		state->ram[addr] = val;
+	}
 }
 
 void write_word(spc_state_t *state, Uint16 addr, Uint16 val) {
@@ -2888,7 +2889,7 @@ void decode_adsr(spc_state_t *state, int voice_nr, spc_adsr_t *out) {
 
 	out->ar = adsr1 & 0x0F;
 	out->dr = (adsr1 >> 4) & 0x07;
-	out->use_adsr = (adsr1 >> 6) & 0x01;
+	out->use_adsr = (adsr1 >> 7) & 0x01;
 	out->sr = adsr2 & 0x1F;
 	out->sl = (adsr2 >> 5) & 0x07;
 	out->rr = 31;
@@ -3156,31 +3157,39 @@ void dump_dsp(spc_state_t *state) {
 				break;
 
 			case 0x3D:
-				printf("NOV: $#%02X\n", dsp[i]);
+				printf("NOV: #$%02X\n", dsp[i]);
 				break;
 
 			case 0x4C:
-				printf("KON: $#%02X\n", dsp[i]);
+				printf("KON: #$%02X\n", dsp[i]);
 				break;
 
 			case 0x4D:
-				printf("EOV: $#%02X\n", dsp[i]);
+				printf("EON (Echo On): #$%02X\n", dsp[i]);
 				break;
 
 			case 0x5C:
-				printf("KOFF: $#%02X\n", dsp[i]);
+				printf("KOFF: #$%02X\n", dsp[i]);
 				break;
 
 			case 0x5D:
-				printf("SAMLOC (DIR): $#%02X\n", dsp[i]);
+				printf("SAMLOC (DIR): #$%02X\n", dsp[i]);
 				break;
 
 			case 0x6C:
 				printf("FLG: $#%02X\n", dsp[i]);
 				break;
 
+			case 0x6D:
+				printf("ESA (Echo Start Address): #$%02X\n", dsp[i]);
+				break;
+
 			case 0x7C:
-				printf("*ENDX: $#%02X\n", dsp[i]);
+				printf("*ENDX: #$%02X\n", dsp[i]);
+				break;
+
+			case 0x7D:
+				printf("EDL (Echo Delay): #$%02X\n", dsp[i]);
 				break;
 
 			default:
