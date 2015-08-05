@@ -288,6 +288,9 @@ int INTERP_TABLE[] = {
 
 /* Global variables */
 volatile int g_do_break = 1;
+int g_break_read_addr = -1;
+int g_break_write_addr = -1;
+int g_break_exec_addr = -1;
 opcode_t *g_opcode_table = NULL;
 
 int dump_instruction(Uint16 pc, Uint8 *ram);
@@ -672,6 +675,11 @@ Uint8 register_read(spc_state_t *state, Uint16 addr) {
 
 /* Write a byte to memory / registers */
 void write_byte(spc_state_t *state, Uint16 addr, Uint8 val) {
+	if (addr == g_break_write_addr) {
+		printf("$%04X is writing to %04X\n", state->regs->pc, addr);
+		g_do_break = 1;
+	}
+
 	// Handle registers 0xF0-0xFF
 	if ((addr & 0xFFF0) == 0x00F0) {
 		// XXX: Handle register here.
@@ -693,6 +701,11 @@ void write_word(spc_state_t *state, Uint16 addr, Uint16 val) {
 /* Read a byte from memory / registers / whatever */
 Uint8 read_byte(spc_state_t *state, Uint16 addr) {
 	Uint8 val;
+
+	if (addr == g_break_read_addr) {
+		printf("$%04X is reading from %04X\n", state->regs->pc, addr);
+		g_do_break = 1;
+	}
 
 	// Handle registers 0xF0-0xFF
 	if ((addr & 0xFFF0) == 0x00F0) {
@@ -3198,7 +3211,9 @@ void usage(char *argv0)
 }
 
 void show_menu(void) {
-	printf("b <addr>   Set breakpoint on <addr> (ie, \"b abcd\")\n");
+	printf("br <addr>  Set breakpoint on memory read of <addr> (ie, \"br abcd\")\n");
+	printf("bw <addr>  Set breakpoint on memory write of <addr> (ie, \"bw abcd\")\n");
+	printf("bx <addr>  Set breakpoint on execution of <addr> (ie, \"bx abcd\")\n");
 	printf("c          Continue execution\n");
 	printf("d [<addr>] Disassemble at $<addr>, or $pc if addr is not supplied (ie, \"d abcd\")\n");
 	printf("h          Shows this help\n");
@@ -4064,7 +4079,6 @@ int main (int argc, char *argv[])
 	spc_state_t state;
 	char input[200];
 	int quit = 0;
-	int break_addr = -1;
 	char *device = NULL;
 	sig_t err;
 	unsigned long next_audio_sample;
@@ -4160,8 +4174,8 @@ int main (int argc, char *argv[])
 	}
 
 	while (! quit) {
-		if (state.regs->pc == break_addr) {
-			printf("Reached breakpoint %04X\n", break_addr);
+		if (state.regs->pc == g_break_exec_addr) {
+			printf("Reached breakpoint %04X\n", g_break_exec_addr);
 			g_do_break = 1;
 		}
 
@@ -4193,8 +4207,16 @@ int main (int argc, char *argv[])
 					char *ptr = strchr(input, ' ');
 
 					if (ptr) {
-						break_addr = (Uint16) strtol(ptr, NULL, 16);
-						printf("Breakpoint enabled at %04X\n", break_addr);
+						if (strncmp(input, "bx", 2) == 0) {
+							g_break_exec_addr = (Uint16) strtol(ptr, NULL, 16);
+							printf("Execution breakpoint enabled at %04X\n", g_break_exec_addr);
+						} else if (strncmp(input, "br", 2) == 0) {
+							g_break_read_addr = strtol(ptr, NULL, 16); 
+							printf("Memory (read) breakpoint enabled at %04X\n", g_break_read_addr);
+						} else if (strncmp(input, "bw", 2) == 0) {
+							g_break_write_addr = strtol(ptr, NULL, 16); 
+							printf("Memory (write) breakpoint enabled at %04X\n", g_break_write_addr);
+						}
 					} else {
 						fprintf(stderr, "Missing argument\n");
 					}
