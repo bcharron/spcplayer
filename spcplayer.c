@@ -574,7 +574,8 @@ void register_write(spc_state_t *state, Uint16 addr, Uint8 val) {
 		case 0xF5:	// CPUIO1
 		case 0xF6:	// CPUIO2
 		case 0xF7:	// CPUIO3
-			state->ram[addr] = val;
+			// state->ram[addr] = val;
+			// Ignore writes to CPUIO; they break srb-10 and 11
 			break;
 
 		case 0xF8:	// Unknown, AKA AUXIO4
@@ -2120,7 +2121,7 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			else
 				state->regs->psw.f.z = 0;
 
-			if ((state->regs->y & 0x80) > 0)
+			if ((state->regs->y & 0x80) != 0)
 				state->regs->psw.f.n = 1;
 			else
 				state->regs->psw.f.n = 0;
@@ -4216,6 +4217,8 @@ int main (int argc, char *argv[])
 						} else if (strncmp(input, "bw", 2) == 0) {
 							g_break_write_addr = strtol(ptr, NULL, 16); 
 							printf("Memory (write) breakpoint enabled at %04X\n", g_break_write_addr);
+						} else {
+							fprintf(stderr, "ERROR: Invalid command\n");
 						}
 					} else {
 						fprintf(stderr, "Missing argument\n");
