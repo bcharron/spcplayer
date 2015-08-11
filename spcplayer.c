@@ -206,6 +206,12 @@ enum adsr_phases {
 	SPC_VOICE_RELEASE
 };
 
+enum output_format {
+	FMT_NONE,
+	FMT_RAW,
+	FMT_WAV
+};
+
 typedef struct spc_adsr_s {
 	unsigned int ar;	// attack rate
 	unsigned int dr;	// decay rate
@@ -247,7 +253,9 @@ typedef struct spc_state_s {
 	int *profile_info;
 	buf_t *audio_buf;
 	FILE *out_file;
+	enum output_format output_format;
 	int audio_dev;
+	int wav_samples_remaining;
 } spc_state_t;
 
 /* Gaussian Interpolation table - straight from no$sns specs */
@@ -1152,6 +1160,61 @@ void enable_timer(spc_state_t *state, int timer) {
 
 	if (state->trace & TRACE_COUNTERS)
 		printf("TIMER %d Enabled with divisor %d\n", timer, state->timers.divisor[timer]);
+}
+
+/* Not likely, since we have to re-write the header at the end.. */
+void write_wav_header(FILE *f, uint32_t nb_samples) {
+	uint8_t buf[100];
+	uint32_t *ptr32;
+	uint16_t *ptr16;
+
+	buf[0] = 'R';
+	buf[1] = 'I';
+	buf[2] = 'F';
+	buf[3] = 'F';
+
+	ptr32 = (uint32_t *) &buf[4];
+	*ptr32 = 4 + 24 + (8 + 2 * 2 * nb_samples);	// 2 channels, 2 bytes per samples
+
+	buf[0x08] = 'W';
+	buf[0x09] = 'A';
+	buf[0x0A] = 'V';
+	buf[0x0B] = 'E';
+	buf[0x0C] = 'f';
+	buf[0x0D] = 'm';
+	buf[0x0E] = 't';
+	buf[0x0F] = ' ';
+
+	ptr32 = (uint32_t *) &buf[0x10];
+	*ptr32 = 16;		// Chunk size
+
+	ptr16 = (uint16_t *) &buf[0x14];
+	*ptr16 = 0x0001;	// PCM
+
+	ptr16++;
+	*ptr16 = 2;		// nb_channels
+
+	ptr32 = (uint32_t *) &buf[0x18];
+	*ptr32 = 32000;		// samples/s
+
+	ptr32++;
+	*ptr32 = 64000;		// data rate
+
+	ptr16 = (uint16_t *) &buf[0x20];
+	*ptr16 = 4;		// data block size
+
+	ptr16++;
+	*ptr16 = 16;		// bits per sample
+
+	buf[0x24] = 'd';
+	buf[0x25] = 'a';
+	buf[0x26] = 't';
+	buf[0x27] = 'a';
+
+	ptr32 = (uint32_t *) &buf[0x28];
+	*ptr32 = 2 * 2 * nb_samples;
+
+	fwrite(buf, 0x2C, 1, f);
 }
 
 int execute_instruction(spc_state_t *state, Uint16 addr) {
@@ -3205,9 +3268,10 @@ void dump_dsp(spc_state_t *state) {
 
 void usage(char *argv0)
 {
-	printf("Usage: %s [-h] [-s <secs>] <filename.spc>\n", argv0);
+	printf("Usage: %s [-h] [-o <file>] [-w <file>] [-s <secs>] <filename.spc>\n", argv0);
 	printf("Where:\n");
-	printf("-o <file> 	Write samples to <file>\n");
+	printf("-o <file> 	Write raw samples to <file>\n");
+	printf("-w <file> 	Write 5 seconds of WAV output to <file>\n");
 	printf("-s <secs> 	Skip <secs> seconds from the start\n");
 }
 
@@ -4022,6 +4086,18 @@ int is_waiting_on_timer(Uint8 *mem) {
 	return(ret);
 }
 
+void dump_buffer_to_wav(spc_state_t *state, int nb_samples) {
+	Sint16 sample;
+	int len;
+
+	assert(state->out_file);
+
+	for (len = nb_samples; len > 0; len--) {
+		sample = buffer_get_one(state->audio_buf);
+		fwrite(&sample, 1, sizeof(sample), state->out_file);
+	}
+}
+
 void dump_buffer_to_file(spc_state_t *state) {
 	Sint16 sample;
 	int len;
@@ -4042,6 +4118,7 @@ void dump_buffer_to_file(spc_state_t *state) {
 typedef struct options_s {
 	float sim;
 	char *output_file;
+	char *wav_filename;
 } options_t;
 
 int parse_argv(int argc, char *argv[], options_t *options) {
@@ -4049,7 +4126,7 @@ int parse_argv(int argc, char *argv[], options_t *options) {
 
 	assert(options != NULL);
 
-	while ((ch = getopt(argc, argv, "ho:s:")) != -1) {
+	while ((ch = getopt(argc, argv, "ho:s:w:")) != -1) {
 		switch(ch) {
 			case 'h':
 				usage(argv[0]);
@@ -4062,6 +4139,10 @@ int parse_argv(int argc, char *argv[], options_t *options) {
 
 			case 's': // skip seconds
 				options->sim = strtof(optarg, NULL);
+				break;
+
+			case 'w': // output wav
+				options->wav_filename = optarg;
 				break;
 
 			default:
@@ -4129,12 +4210,22 @@ int main (int argc, char *argv[])
 	state.profile_info = NULL;
 	state.audio_buf = buffer_create(AUDIO_BUFFER_SIZE);
 	state.out_file = NULL;
+	state.output_format = FMT_NONE;
 	state.sample_counter = 0;
+	state.wav_samples_remaining = 5 * 32000;	// 5 seconds. Abritrary.
 
 	// Dump buffer to a file, if requested.
-	if (opts.output_file != NULL)
+	if (opts.output_file != NULL) {
 		printf("Writing output to %s\n", opts.output_file);
 		state.out_file = fopen(opts.output_file, "w");
+		state.output_format = FMT_RAW;
+	} else if (opts.wav_filename != NULL) {
+		printf("Writing output to %s\n", opts.wav_filename);
+		state.out_file = fopen(opts.wav_filename, "w");
+		state.output_format = FMT_WAV;
+
+		write_wav_header(state.out_file, state.wav_samples_remaining);
+	}
 
 	// Assume that whatever was in DSP_ADDR is the current register.
 	state.current_dsp_register = state.ram[0xF2];
@@ -4472,7 +4563,38 @@ int main (int argc, char *argv[])
 				}
 
 				if (state.out_file) {
-					dump_buffer_to_file(&state);
+					switch(state.output_format) {
+						case FMT_NONE: 
+							fprintf(stderr, "ERROR: Output file defined without a format\n");
+							break;
+
+						case FMT_WAV: 
+						{
+							int nb = buffer_get_len(state.audio_buf);
+							
+							if (nb > state.wav_samples_remaining)
+								nb = state.wav_samples_remaining;
+
+							dump_buffer_to_wav(&state, nb);
+
+							state.wav_samples_remaining -= nb;
+
+							if (state.wav_samples_remaining <= 0) {
+								printf("Finished writing wav.\n");
+								quit = 1;
+							}
+						}
+						break;
+
+						case FMT_RAW:
+							dump_buffer_to_file(&state);
+							break;
+							
+						default:
+							fprintf(stderr, "ERROR: Unknown file format, %d\n", state.output_format);
+							break;
+					}
+
 				} else {
 					// Wait on audio driver to read the buffer.
 					// printf("Audio buffer is full.\n");
