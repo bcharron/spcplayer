@@ -2984,6 +2984,7 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 	Uint8 loop_code;
 	Uint8 b;
 	brr_block_t *block;
+	Sint16 *cur_sample;
 
 	/*
 	Uint8 bytes[9] = { 12 << 4, 0x77, 0x77, 0x99, 0x99, 0x77, 0x77, 0x99, 0x99 };
@@ -3011,8 +3012,10 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 	// Skip header
 	ptr++;
 
+	cur_sample = block->samples;
+
 	/* 
-	 * Go through a constant-width struct in order to sign-extend before *
+	 * Go through a constant-width struct in order to sign-extend before
 	 * scaling
 	 */
 	for (int x = 0; x < 8; x++) {
@@ -3029,7 +3032,7 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 			dst = ((dst >> 3) << 12) >> 1;
 		}
 
-		block->samples[2 * x] = do_filter(filter, dst, v->prev_brr);
+		*cur_sample++ = do_filter(filter, dst, v->prev_brr);
 
 		tmp.i = ptr[x] & 0x0F;
 		dst = tmp.i;
@@ -3039,7 +3042,7 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 			dst = ((dst >> 3) << 12) >> 1;
 		}
 
-		block->samples[2 * x + 1] = do_filter(filter, dst, v->prev_brr);
+		*cur_sample++ = do_filter(filter, dst, v->prev_brr);
 	}
 
 	return(block);
@@ -4212,7 +4215,7 @@ int main (int argc, char *argv[])
 	state.out_file = NULL;
 	state.output_format = FMT_NONE;
 	state.sample_counter = 0;
-	state.wav_samples_remaining = 5 * 32000;	// 5 seconds. Abritrary.
+	state.wav_samples_remaining = 5 * 32000 * 2;	// 5 seconds. Abritrary.
 
 	// Dump buffer to a file, if requested.
 	if (opts.output_file != NULL) {
