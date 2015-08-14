@@ -155,6 +155,7 @@ typedef union spc_flags_u {
 
 typedef struct brr_block_s {
 	Sint16 samples[16];
+	Sint16 prev[16];
 	int filter;
 	int loop_flag;
 	int last_chunk;
@@ -232,9 +233,8 @@ typedef struct spc_voice_s {
 	int enabled;		// 1 if enabled (KON), 0 otherwise
 	Uint16 cur_addr;	// Address of current sample block
 	int looping;		// Whether it's in looping mode
-	brr_block_t *block;	// Current block
+	brr_block_t block;	// Current block
 	unsigned int counter;	// Current counter, based on number of steps done for this block of 4 BRR samples so far
-	Sint16 prev_interp[3];	// Previous BRR samples, for interpolation
 	Sint16 prev_brr[2];	// Previous BRR samples, for voice filter
 	spc_adsr_t adsr;
 } spc_voice_t;
@@ -2991,11 +2991,9 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 	ptr = bytes;
 	*/
 
-	block = malloc(sizeof(brr_block_t));
-	if (NULL == block) {
-		perror("decode_brr_block: malloc()");
-		exit(1);
-	}
+	memcpy(v->block.prev, v->block.samples, sizeof(Sint16) * 16);
+
+	block = &v->block;
 
 	b = ptr[0];
 	range = (b >> 4) & 0x0F;
@@ -3313,7 +3311,6 @@ int get_voice_pitch(spc_state_t *state, int voice_nr) {
 
 	// According to the specs, bits 6 and 7 of Pitch(H) are 0, but in practice it doesn't seem to be the case..
 	pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH) & 0x3F;
-	// pitch_high = get_dsp_voice(state, voice_nr, SPC_DSP_VxPITCHH);
 
 	pitch = make16(pitch_high, pitch_low);
 
@@ -3369,19 +3366,14 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 		int ret = 1;
 		spc_voice_t *v = &state->voices[voice_nr];
 
-		/* kon() initializes v->block, so block should never be NULL
-		 * when we get here.
-		 */
-		assert(NULL != v->block);
-
 		// printf("last_chunk? %d\n", block->last_chunk);
 		// printf("loop? %d\n", block->loop_flag);
 
 		v->cur_addr += 9;
 
-		if (v->block->last_chunk) {
+		if (v->block.last_chunk) {
 			// printf("v[%d] End of chunk.\n", voice_nr);
-			if (v->block->loop_flag) {
+			if (v->block.loop_flag) {
 				v->cur_addr = get_sample_addr(state, voice_nr, 1);
 				// printf("v[%d] Looping from $%04X!\n", voice_nr, v->cur_addr);
 			} else {
@@ -3390,17 +3382,14 @@ int decode_next_brr_block(spc_state_t *state, int voice_nr) {
 			}
 		}
 
-		free(v->block);
-		v->block = NULL;
-
 		if (ret) {
 			// printf("v[%d]: decode_next_brr_block(): decoding from $%04X\n", voice_nr, v->cur_addr);
 
-			v->block = decode_brr_block(v, &state->ram[v->cur_addr]);
+			decode_brr_block(v, &state->ram[v->cur_addr]);
 
 			/* Last chunk? Set the ENDX flag */
-			if (v->block->last_chunk) {
-				if (v->block->loop_flag) {
+			if (v->block.last_chunk) {
+				if (v->block.loop_flag) {
 				} else {
 					// XXX: Set voice in Release and enveloppe to 0, apparently. Not a great fade..
 					state->voices[voice_nr].adsr.cur_phase = SPC_VOICE_RELEASE;
@@ -3815,33 +3804,71 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
 		assert(index >= 0 && index <= 255);
 
-		sample = v->block->samples[brr_nr];
+		sample = v->block.samples[brr_nr];
 
+#ifdef LINEAR_INTERP
+		Sint16 old_sample;
+
+		if (brr_nr > 0) {
+			old_sample = v->block.samples[brr_nr - 1];
+		} else {
+			old_sample = v->prev_interp[2];
+		}
+
+		float pct = 1.0 / (v->counter & 0x0FFF);
+		int out = (old_sample - sample) * pct + sample;
+
+		// In case we move on to another block for the next sample.
+		v->prev_interp[2] = v->block.samples[15];
+#else
+		// Gaussian interpolation
 		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
 		signed_15bit_t tmp;
 
-		tmp.i  = (INTERP_TABLE[0x0FF - index] * (int) v->prev_interp[0]) >> 11;
-		tmp.i += (INTERP_TABLE[0x1FF - index] * (int) v->prev_interp[1]) >> 11;
-		tmp.i += (INTERP_TABLE[0x100 + index] * (int) v->prev_interp[2]) >> 11;
+		int old, older, oldest;
+
+		switch(brr_nr) {
+			case 0:
+				oldest = v->block.prev[13];
+				older  = v->block.prev[14];
+				old    = v->block.prev[15];
+				break;
+
+			case 1:
+				oldest = v->block.prev[14];
+				older  = v->block.prev[15];
+				old    = v->block.samples[brr_nr - 1];
+				break;
+
+			case 2:
+				oldest = v->block.prev[15];
+				older  = v->block.samples[brr_nr - 2];
+				old    = v->block.samples[brr_nr - 1];
+				break;
+
+			default:
+				oldest = v->block.samples[brr_nr - 3];
+				older  = v->block.samples[brr_nr - 2];
+				old    = v->block.samples[brr_nr - 1];
+				break;
+		}
+
+		tmp.i  = (INTERP_TABLE[0x0FF - index] * oldest) >> 10;
+		tmp.i += (INTERP_TABLE[0x1FF - index] * older) >> 10;
+		tmp.i += (INTERP_TABLE[0x100 + index] * old) >> 10;
 
 		int out = tmp.i;
-		out += (INTERP_TABLE[0x000 + index] * (int) sample) >> 11;
+		out += (INTERP_TABLE[0x000 + index] * (int) sample) >> 10;
+		out = out >> 1;
 
 		// Clamp to 15-bit
 		if (out > 16383)
 			out = 16383;
 		else if (out < -16384)
 			out = -16384;
-
-		// out     = out >> 1;
-
+#endif
 		// printf("v[%d]: out: %d\n", voice_nr, out);
-
-		/* Rotate the samples for next time */
-		v->prev_interp[0] = v->prev_interp[1];
-		v->prev_interp[1] = v->prev_interp[2];
-		v->prev_interp[2] = sample;
 
 		sample = out;
 
@@ -3861,6 +3888,7 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 		Uint8 outx = (sample >> 8) & 0x0F;
 		set_dsp_voice(state, voice_nr, SPC_DSP_VxOUTX, outx);
+
 	}
 
 	return(sample);
@@ -3886,17 +3914,10 @@ void kon_voice(spc_state_t *state, int voice_nr) {
 
 	decode_adsr(state, voice_nr, &v->adsr);
 
-	/* KON can be called while the voice is already enabled */
-	if (NULL != v->block) {
-		free(v->block);
-		v->block = NULL;
-	}
-
 	Uint8 *block_ptr = &state->ram[v->cur_addr];
 
-	v->block = decode_brr_block(v, block_ptr);
-
-	assert(v->block != NULL);
+	memset(v->block.prev, 0, sizeof(Sint16) * 16);
+	decode_brr_block(v, block_ptr);
 }
 
 /* Called when a voice is Keyed-OFF ("KOFF") */
@@ -3927,11 +3948,9 @@ void init_voice(spc_state_t *state, int voice_nr) {
 	state->voices[voice_nr].enabled = 0;
 	state->voices[voice_nr].cur_addr = 0;
 	state->voices[voice_nr].looping = 0;
-	state->voices[voice_nr].block = NULL;
-	state->voices[voice_nr].prev_interp[0] = 0;
-	state->voices[voice_nr].prev_interp[1] = 0;
-	state->voices[voice_nr].prev_interp[2] = 0;
 	state->voices[voice_nr].counter = 0;
+
+	memset(&state->voices[voice_nr].block, 0, sizeof(brr_block_t));
 
 	state->voices[voice_nr].prev_brr[0] = 0;
 	state->voices[voice_nr].prev_brr[1] = 0;
