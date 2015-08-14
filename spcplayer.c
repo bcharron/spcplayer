@@ -3806,21 +3806,6 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 		sample = v->block.samples[brr_nr];
 
-#ifdef LINEAR_INTERP
-		Sint16 old_sample;
-
-		if (brr_nr > 0) {
-			old_sample = v->block.samples[brr_nr - 1];
-		} else {
-			old_sample = v->prev_interp[2];
-		}
-
-		float pct = 1.0 / (v->counter & 0x0FFF);
-		int out = (old_sample - sample) * pct + sample;
-
-		// In case we move on to another block for the next sample.
-		v->prev_interp[2] = v->block.samples[15];
-#else
 		// Gaussian interpolation
 		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
@@ -3859,7 +3844,7 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		tmp.i += (INTERP_TABLE[0x100 + index] * old) >> 10;
 
 		int out = tmp.i;
-		out += (INTERP_TABLE[0x000 + index] * (int) sample) >> 10;
+		out += (INTERP_TABLE[0x000 + index] * sample) >> 10;
 		out = out >> 1;
 
 		// Clamp to 15-bit
@@ -3867,7 +3852,7 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 			out = 16383;
 		else if (out < -16384)
 			out = -16384;
-#endif
+
 		// printf("v[%d]: out: %d\n", voice_nr, out);
 
 		sample = out;
