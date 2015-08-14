@@ -3813,6 +3813,8 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 
 		int old, older, oldest;
 
+		// If the BRR index is near the start of the sample, read from
+		// the previous BRR block.
 		switch(brr_nr) {
 			case 0:
 				oldest = v->block.prev[13];
