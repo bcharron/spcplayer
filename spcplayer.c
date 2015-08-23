@@ -44,8 +44,17 @@
 #include "ctl_registers.h"
 #include "buf.h"
 
+#define CLAMP16(s) { if (s > 32767) s = 32767; else if (s < -32768) s = -32768; }
+#define CLAMP15(s) { if (s > 16383) s = 16383; else if (s < -16384) s = -16384; }
+
+// SPC Main clock speed, in Hz
+#define MAIN_CLOCK 1024000
+
+// How many samples are output per second. Don't try changing this ;)
+#define SAMPLE_RATE 32000
+
 // How many cycles between audio updates
-#define AUDIO_SAMPLE_PERIOD ((2048 * 1000) / 32000)
+#define AUDIO_SAMPLE_PERIOD (MAIN_CLOCK / SAMPLE_RATE)
 
 // How many samples to fill in each pass. This buffer is the queue from which
 // SDL_audio reads from.
@@ -84,9 +93,9 @@
 #define SPC_REG_COUNTER2 0xFF
 
 // How many cycles before a timer's internal counter is incremented, based on
-// 2.048 MHz clock. In other words: the period of the timer, in cpu cycles.
-#define SPC_TIMER_CYCLES_8KHZ 256
-#define SPC_TIMER_CYCLES_64KHZ 32
+// 1.024 MHz clock. In other words: the period of the timer, in cpu cycles.
+#define SPC_TIMER_CYCLES_8KHZ (MAIN_CLOCK / 8000)
+#define SPC_TIMER_CYCLES_64KHZ (MAIN_CLOCK / 64000)
 
 // ADSR Stuff
 #define SPC_DSP_ENV_MAX (1 << 11)	// Max value of the enveloppe
@@ -154,8 +163,7 @@ typedef union spc_flags_u {
 } spc_flags_t;
 
 typedef struct brr_block_s {
-	Sint16 samples[16];
-	Sint16 prev[16];
+	Sint16 samples[32];
 	int filter;
 	int loop_flag;
 	int last_chunk;
@@ -235,7 +243,7 @@ typedef struct spc_voice_s {
 	int looping;		// Whether it's in looping mode
 	brr_block_t block;	// Current block
 	unsigned int counter;	// Current counter, based on number of steps done for this block of 4 BRR samples so far
-	Sint16 prev_brr[2];	// Previous BRR samples, for voice filter
+	int prev_brr[2];	// Previous BRR samples, for voice filter
 	spc_adsr_t adsr;
 } spc_voice_t;
 
@@ -1107,9 +1115,6 @@ int TIMER_CYCLES[3] = { SPC_TIMER_CYCLES_8KHZ, SPC_TIMER_CYCLES_8KHZ, SPC_TIMER_
 
 /* Go through Timers 0-2. If enough cycles have elapsed, the counter 'ticks' */
 void update_counters(spc_state_t *state) {
-	// 2.048 MHz / 8kHz = 256
-	// 2.048 MHz / 64kHz = 32
-
 	// XXX: Most likely want a single "next_counter" (min of all next_timer
 	// counters) to avoid going through all this every single tick.
 	for (int timer = 0; timer < 3; timer++) {
@@ -1168,13 +1173,15 @@ void write_wav_header(FILE *f, uint32_t nb_samples) {
 	uint32_t *ptr32;
 	uint16_t *ptr16;
 
+	int nb_channels = 2;
+
 	buf[0] = 'R';
 	buf[1] = 'I';
 	buf[2] = 'F';
 	buf[3] = 'F';
 
 	ptr32 = (uint32_t *) &buf[4];
-	*ptr32 = 4 + 24 + (8 + 2 * 2 * nb_samples);	// 2 channels, 2 bytes per samples
+	*ptr32 = 4 + 24 + (8 + nb_channels * 2 * nb_samples);	// 2 channels, 2 bytes per samples
 
 	buf[0x08] = 'W';
 	buf[0x09] = 'A';
@@ -1192,16 +1199,16 @@ void write_wav_header(FILE *f, uint32_t nb_samples) {
 	*ptr16 = 0x0001;	// PCM
 
 	ptr16++;
-	*ptr16 = 2;		// nb_channels
+	*ptr16 = nb_channels;	// nb_channels
 
 	ptr32 = (uint32_t *) &buf[0x18];
-	*ptr32 = 32000;		// samples/s
+	*ptr32 = SAMPLE_RATE;	// samples/s
 
 	ptr32++;
-	*ptr32 = 64000;		// data rate
+	*ptr32 = nb_channels * SAMPLE_RATE;		// data rate
 
 	ptr16 = (uint16_t *) &buf[0x20];
-	*ptr16 = 4;		// data block size
+	*ptr16 = nb_channels * 2;	// data block size
 
 	ptr16++;
 	*ptr16 = 16;		// bits per sample
@@ -1212,7 +1219,7 @@ void write_wav_header(FILE *f, uint32_t nb_samples) {
 	buf[0x27] = 'a';
 
 	ptr32 = (uint32_t *) &buf[0x28];
-	*ptr32 = 2 * 2 * nb_samples;
+	*ptr32 = 2 * nb_channels * nb_samples;
 
 	fwrite(buf, 0x2C, 1, f);
 }
@@ -2894,13 +2901,10 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	Uint16 addr;
 	Uint16 addr_ptr;
 	Uint16 dir;
-	Uint16 voice_srcn_addr;
 	Uint8 voice_srcn;
 
-	dir = state->dsp_registers[SPC_DSP_DIR];
-	voice_srcn_addr = (voice_nr << 4) | SPC_DSP_VxSCRN;
-	// printf("SRCN Addr for voice %d: %02X\n", voice_nr, voice_srcn_addr);
-	voice_srcn = state->dsp_registers[voice_srcn_addr];
+	dir = get_dsp(state, SPC_DSP_DIR);
+	voice_srcn = get_dsp_voice(state, voice_nr, SPC_DSP_VxSCRN);
 
 	// printf("Instrument for voice %d (loop:%d) is %d\n", voice_nr, loop, voice_srcn);
 
@@ -2908,7 +2912,7 @@ Uint16 get_sample_addr(spc_state_t *state, int voice_nr, int loop) {
 	 * Each entry in the 'instrument table' is 4 bytes: one word for the
 	 * addr of the sample itself and another for the loop addr.
 	 */
-	addr_ptr = dir * 0x100 + (voice_srcn * 4);
+	addr_ptr = (dir << 8) + (voice_srcn * 4);
 
 	// printf("addr_ptr: %04X\n", addr_ptr);
 
@@ -2932,9 +2936,14 @@ typedef struct nibble_s {
 // XXX: anomie's docs has this to say about clamping:
 // "The calculations above are preformed in some higher number of bits, clamped
 // to 16 bits at the end and then clipped to 15 bits"
-Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
-	Sint16 out = 0;
+int do_filter(int filter, Sint16 new, int *prev) {
+	int out = 0;
 
+	/*
+	prev[0] == S(x-2)
+	prev[1] == S(x-1)
+	new     == D
+	*/
 	switch(filter) {
 		case 0: out = new;
 			break;
@@ -2942,10 +2951,10 @@ Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
 		case 1: out = new + (prev[1] * 1) + ((-prev[1] * 1) >> 4);
 			break;
 
-		case 2: out = new + (prev[1] * 2) + ((-prev[1] * 3) >> 5) - prev[0] + ((prev[0] * 1) >> 4);
+		case 2: out = new + (prev[1] << 1) + ((-((prev[1] << 1) + prev[1])) >> 5) - prev[0] + (prev[0] >> 4);
 			break;
 
-		case 3: out = new + (prev[1] * 2) + ((-prev[1] * 13) >> 6) - prev[0] + ((prev[0] * 3) >> 4);
+		case 3: out = new + (prev[1] << 1) + ((-(prev[1] + (prev[1] << 2) + (prev[1] << 3))) >> 6) - prev[0] + (((prev[0] << 1) + prev[0]) >> 4);
 			break;
 
 		default:
@@ -2954,8 +2963,13 @@ Sint16 do_filter(int filter, Sint16 new, Sint16 *prev) {
 			break;
 	}
 
+	CLAMP16(out);
+
+	// Clip to 15-bit. I assume "clip" means "toss-out lowest bit"
+	out = out >> 1;
+
 	prev[0] = prev[1];
-	prev[1] = new;
+	prev[1] = out;
 
 	return(out);
 }
@@ -2991,7 +3005,7 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 	ptr = bytes;
 	*/
 
-	memcpy(v->block.prev, v->block.samples, sizeof(Sint16) * 16);
+	memcpy(&v->block.samples[0], &v->block.samples[16], sizeof(Sint16) * 16);
 
 	block = &v->block;
 
@@ -3010,7 +3024,7 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 	// Skip header
 	ptr++;
 
-	cur_sample = block->samples;
+	cur_sample = &block->samples[16];
 
 	/* 
 	 * Go through a constant-width struct in order to sign-extend before
@@ -3030,17 +3044,24 @@ brr_block_t *decode_brr_block(spc_voice_t *v, Uint8 *ptr) {
 			dst = ((dst >> 3) << 12) >> 1;
 		}
 
+		// printf("Step 1: %02X -> %d -> %d  (range: %d)\n", ptr[x], tmp.i, dst, range);
+
 		*cur_sample++ = do_filter(filter, dst, v->prev_brr);
+		// *cur_sample++ = dst;
 
 		tmp.i = ptr[x] & 0x0F;
 		dst = tmp.i;
+
 		if (range <= 12) {
 			dst = (dst << range) >> 1;
 		} else {
 			dst = ((dst >> 3) << 12) >> 1;
 		}
 
+		// printf("Step 2: %02X -> %d -> %d  (range: %d)\n", ptr[x], tmp.i, dst, range);
+
 		*cur_sample++ = do_filter(filter, dst, v->prev_brr);
+		// *cur_sample++ = dst;
 	}
 
 	return(block);
@@ -3415,15 +3436,29 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 		if (v->enabled) {
 			int s = get_next_sample(state, voice_nr);
 
-			Uint8 voll = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLL);
+
+
+			Sint8 voll = (Sint8) get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLL);
 			lret += ((int)s * voll) >> 7;
 
-			Uint8 volr = get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLR);
+			Sint8 volr = (Sint8) get_dsp_voice(state, voice_nr, SPC_DSP_VxVOLR);
 			rret += ((int)s * volr) >> 7;
+
+			/*
+			Sint16 ss = (s * volr) >> 7;;
+			fwrite(&ss, 1, sizeof(ss), state->out_file);
+			*/
 
 			// printf("Before: %hd  After: %d  vol: %hhd (%0.2f)\n", s, (int) roundf(fsample), voll, pct);
 		}
+		/*
+		else {
+			Sint16 ss = 0;
+			fwrite(&ss, 1, sizeof(ss), state->out_file);
+		}
+		*/
 
+		/*
 		if ((state->trace & TRACE_ADSR) && state->sample_counter % 250 == 0) {
 			printf("v[%d]: ", voice_nr);
 
@@ -3439,13 +3474,16 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 				}
 			}
 		}
+		*/
 	}
 
+	/*
 	if ((state->trace & TRACE_ADSR) && state->sample_counter % 250 == 0) {
 		printf("\n");
 	}
+	*/
 
-	lret *= get_dsp(state, SPC_DSP_MVOLL);
+	lret *= (Sint8) get_dsp(state, SPC_DSP_MVOLL);
 	lret >>= 7;
 
 	if (lret > 32767) {
@@ -3456,7 +3494,7 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 		lret = -32768;
 	}
 
-	rret *= get_dsp(state, SPC_DSP_MVOLR);
+	rret *= (Sint8) get_dsp(state, SPC_DSP_MVOLR);
 	rret >>= 7;
 
 	if (rret > 32767) {
@@ -3473,7 +3511,7 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 	}
 
 // XXX: Defining a manual amp for now to get the sound loud enough.
-#define STATIC_GAIN 16
+#define STATIC_GAIN 32
 
 	*left = lret * STATIC_GAIN;
 	*right = rret * STATIC_GAIN;
@@ -3804,58 +3842,50 @@ Sint16 get_next_sample(spc_state_t *state, int voice_nr) {
 		assert(index < sizeof(INTERP_TABLE) / sizeof(INTERP_TABLE[0]));
 		assert(index >= 0 && index <= 255);
 
-		sample = v->block.samples[brr_nr];
-
 		// Gaussian interpolation
 		// printf("v[%d]: brr %d  sample %d\n", voice_nr, brr_nr, sample);
 
+		sample = v->block.samples[brr_nr];
+
 		signed_15bit_t tmp;
 
-		int old, older, oldest;
-
-		// If the BRR index is near the start of the sample, read from
-		// the previous BRR block.
-		switch(brr_nr) {
-			case 0:
-				oldest = v->block.prev[13];
-				older  = v->block.prev[14];
-				old    = v->block.prev[15];
-				break;
-
-			case 1:
-				oldest = v->block.prev[14];
-				older  = v->block.prev[15];
-				old    = v->block.samples[brr_nr - 1];
-				break;
-
-			case 2:
-				oldest = v->block.prev[15];
-				older  = v->block.samples[brr_nr - 2];
-				old    = v->block.samples[brr_nr - 1];
-				break;
-
-			default:
-				oldest = v->block.samples[brr_nr - 3];
-				older  = v->block.samples[brr_nr - 2];
-				old    = v->block.samples[brr_nr - 1];
-				break;
-		}
-
-		tmp.i  = (INTERP_TABLE[0x0FF - index] * oldest) >> 10;
-		tmp.i += (INTERP_TABLE[0x1FF - index] * older) >> 10;
-		tmp.i += (INTERP_TABLE[0x100 + index] * old) >> 10;
+#define DO15BIT
+#ifdef DO15BIT
+		tmp.i  = (INTERP_TABLE[0x0FF - index] * v->block.samples[brr_nr + 0]) >> 10;
+		tmp.i += (INTERP_TABLE[0x1FF - index] * v->block.samples[brr_nr + 1]) >> 10;
+		tmp.i += (INTERP_TABLE[0x100 + index] * v->block.samples[brr_nr + 2]) >> 10;
 
 		int out = tmp.i;
-		out += (INTERP_TABLE[0x000 + index] * sample) >> 10;
+		out += (INTERP_TABLE[0x000 + index] * v->block.samples[brr_nr + 3]) >> 10;
 		out = out >> 1;
 
 		// Clamp to 15-bit
-		if (out > 16383)
-			out = 16383;
-		else if (out < -16384)
-			out = -16384;
+		CLAMP15(out);
+#else
+		int out;
+
+		out  = (INTERP_TABLE[0x0FF - index] * v->block.samples[brr_nr + 0]) >> 10;
+		out += (INTERP_TABLE[0x1FF - index] * v->block.samples[brr_nr + 1]) >> 10;
+		out += (INTERP_TABLE[0x100 + index] * v->block.samples[brr_nr + 2]) >> 10;
+
+		// Clamp to 15-bit
+		CLAMP15(out);
+
+		out += (INTERP_TABLE[0x000 + index] * v->block.samples[brr_nr + 3]) >> 10;
+		// out = out >> 1;
+
+		CLAMP15(out);
+#endif
 
 		// printf("v[%d]: out: %d\n", voice_nr, out);
+
+		/*
+		if (sample > 0 && out < 0) {
+			printf("Sample changed sign: %d vs %d\n", sample, out);
+		} else if (sample < 0 && out > 0) {
+			printf("Sample changed sign: %d vs %d\n", sample, out);
+		}
+		*/
 
 		sample = out;
 
@@ -3901,9 +3931,22 @@ void kon_voice(spc_state_t *state, int voice_nr) {
 
 	decode_adsr(state, voice_nr, &v->adsr);
 
+	if (state->trace & TRACE_ADSR) {
+		if (v->adsr.use_adsr) {
+			printf("v[%d]: ADSR (%d/%04d)\n", voice_nr, v->adsr.cur_phase, v->adsr.env);
+		} else {
+			if ((v->adsr.gain & 0x80) == 0) {
+				printf("v[%d]: GAIN (x/%d/%04d)\n", voice_nr, v->adsr.gain, v->adsr.env);
+			} else {
+				printf("v[%d]: GAIN (%d/%d/%04d)\n", voice_nr, v->adsr.gain_mode, v->adsr.gain & 0x1F, v->adsr.env);
+			}
+		}
+	}
+
 	Uint8 *block_ptr = &state->ram[v->cur_addr];
 
-	memset(v->block.prev, 0, sizeof(Sint16) * 16);
+	memset(v->block.samples, 0, sizeof(Sint16) * 32);
+	decode_brr_block(v, block_ptr);
 	decode_brr_block(v, block_ptr);
 }
 
@@ -4579,6 +4622,8 @@ int main (int argc, char *argv[])
 
 						case FMT_WAV: 
 						{
+							SDL_LockAudioDevice(state.audio_dev);
+
 							int nb = buffer_get_len(state.audio_buf);
 							
 							if (nb > state.wav_samples_remaining)
@@ -4587,6 +4632,8 @@ int main (int argc, char *argv[])
 							dump_buffer_to_wav(&state, nb);
 
 							state.wav_samples_remaining -= nb;
+
+							SDL_UnlockAudioDevice(state.audio_dev);
 
 							if (state.wav_samples_remaining <= 0) {
 								printf("Finished writing wav.\n");
