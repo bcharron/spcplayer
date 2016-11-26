@@ -1518,6 +1518,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 		}
 		break;
 
+		case 0x3C: // ROL A
+		{
+			state->regs->a = do_rol(state, state->regs->a);
+			cycles = 2;
+			break;
+		}
+		break;
+
 		case 0x3D: // INC X
 			state->regs->x++;
 			adjust_flags(state, state->regs->x);
@@ -2470,8 +2478,8 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			val = val ^ (1 << bits);
 			write_byte(state, abs_addr, val);
 			cycles = 5;
-			break;
 		}
+		break;
 			
 		case 0xEB: // MOV Y, $xx
 			val = get_direct_page_byte(state, operand1);
