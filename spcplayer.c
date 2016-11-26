@@ -1661,6 +1661,14 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x58: // EOR $dp, $#imm
+			val = get_direct_page_byte(state, operand2);
+			val ^= operand1;
+			adjust_flags(state, val);
+			write_byte(state, operand2, val);
+			cycles = 5;
+			break;
+
 		case 0x5C: // LSR A
 			state->regs->psw.f.c = state->regs->a & 0x01;
 			state->regs->a >>= 1;
