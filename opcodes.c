@@ -107,7 +107,7 @@ opcode_t OPCODE_TABLE[] = {
 	{ "DBNZ $%02X, #$%02X", 0x6E, 3 },
 	{ "DAA YA", 0xDF, 1 },
 	{ "DAS YA", 0xBE, 1 },
-	{ "NOT1 $%02X", 0xEA, 3 },
+	{ "NOT1 $%02X%02X.$%X", 0xEA, 3 },
 	{ "XCN A", 0x9F, 1 },
 	{ "MOV1 C,$%02X", 0xAA, 3 },
 	{ "MOV1 $%02X,C", 0xCA, 3 },

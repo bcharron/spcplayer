@@ -2461,6 +2461,18 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0xEA: // NOT1 $xxyy.$z
+		{
+			Uint16 n = make16(operand2, operand1);
+			Uint8 bits = n >> 13;
+			abs_addr = n & 0x1FFF;
+			val = read_byte(state, abs_addr);
+			val = val ^ (1 << bits);
+			write_byte(state, abs_addr, val);
+			cycles = 5;
+			break;
+		}
+			
 		case 0xEB: // MOV Y, $xx
 			val = get_direct_page_byte(state, operand1);
 			state->regs->y = val;
@@ -2697,6 +2709,11 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 					snprintf(str, sizeof(str), op->name, ram[pc + 1], ram[pc + 2]);
 					break;
 
+				// special case
+				case 0xEA: // NOT1, $xxyy.$z
+					snprintf(str, sizeof(str), op->name, ram[pc + 2] & 0x1F, ram[pc + 1], ram[pc + 2] >> 5);
+					break;
+
 				default:
 					snprintf(str, sizeof(str), op->name, ram[pc + 2], ram[pc + 1]);
 					break;
@@ -2713,6 +2730,7 @@ int dump_instruction(Uint16 pc, Uint8 *ram)
 
 	printf("%s", str);
 
+	// Display relative offset for instructions that have one
 	switch(opcode) {
 		// These are inversed compared to other branch opcodes, and
 		// they need to be incremented by 3 rather than 2.
