@@ -3563,7 +3563,7 @@ void get_next_mixed_sample(spc_state_t *state, Sint16 *left, Sint16 *right) {
 	}
 
 // XXX: Defining a manual amp for now to get the sound loud enough.
-#define STATIC_GAIN 32
+#define STATIC_GAIN 12
 
 	*left = lret * STATIC_GAIN;
 	*right = rret * STATIC_GAIN;
