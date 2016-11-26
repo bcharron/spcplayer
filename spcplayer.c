@@ -1472,6 +1472,24 @@ int execute_instruction(spc_state_t *state, Uint16 addr) {
 			cycles = 4;
 			break;
 
+		case 0x2E: // CBNE $xx, $r
+			// One of the few instructions where operand2 is 'r'
+			val = get_direct_page_byte(state, operand1);
+
+			if (state->regs->a != val) {
+				state->regs->pc += (Sint8) operand2 + 3;
+				cycles = 7;
+
+				if (state->trace & TRACE_CPU_JUMPS)
+					printf("Jumping to 0x%04X\n", state->regs->pc);
+			} else {
+				cycles = 5;
+				state->regs->pc += 3;
+			} 
+
+			pc_adjusted = 1;
+			break;
+
 		case 0x2F: // BRA xx
 			branch_if_flag(state, 1, operand1);
 			pc_adjusted = 1;
